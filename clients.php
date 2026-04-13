@@ -7,6 +7,7 @@ require_auth();
 $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
+ensure_financials_schema($pdo);
 
 /**
  * يدعم JSON + form-data
@@ -24,6 +25,27 @@ function input_all(): array {
 if ($path === "clients" && $method === "GET") {
   $sql = "SELECT * FROM clients ORDER BY id DESC";
   respond($pdo->query($sql)->fetchAll());
+}
+
+/**
+ * GET /clients/{id}/collection-followups
+ */
+if (preg_match('#^clients/(\d+)/collection-followups$#', $path, $m) && $method === "GET") {
+  $id = (int)$m[1];
+
+  $chk = $pdo->prepare("SELECT id FROM clients WHERE id=? LIMIT 1");
+  $chk->execute([$id]);
+  if (!$chk->fetch()) respond(["error" => "Client not found"], 404);
+
+  $st = $pdo->prepare("SELECT f.*, r.id AS rent_no, u.name AS created_by_name
+                       FROM collection_followups f
+                       LEFT JOIN rents r ON f.rent_id = r.id
+                       LEFT JOIN users u ON f.created_by_user_id = u.id
+                       WHERE f.client_id = ?
+                       ORDER BY f.created_at DESC, f.id DESC
+                       LIMIT 50");
+  $st->execute([$id]);
+  respond($st->fetchAll());
 }
 
 /**

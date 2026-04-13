@@ -9,6 +9,33 @@ $pdo    = db();
 
 date_default_timezone_set('Asia/Riyadh');
 
+
+function ensure_shift_closings_schema(PDO $pdo) {
+  $pdo->exec("CREATE TABLE IF NOT EXISTS shift_closings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    shift_date DATE NOT NULL,
+    expected_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+    actual_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+    difference DECIMAL(12,2) NOT NULL DEFAULT 0,
+    cash_total DECIMAL(12,2) NOT NULL DEFAULT 0,
+    transfer_total DECIMAL(12,2) NOT NULL DEFAULT 0,
+    notes TEXT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_shift_user_date (user_id, shift_date)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+  $cols = $pdo->query("SHOW COLUMNS FROM shift_closings")->fetchAll(PDO::FETCH_COLUMN, 0);
+  if (!in_array('cash_total', $cols, true)) {
+    $pdo->exec("ALTER TABLE shift_closings ADD COLUMN cash_total DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER difference");
+  }
+  if (!in_array('transfer_total', $cols, true)) {
+    $pdo->exec("ALTER TABLE shift_closings ADD COLUMN transfer_total DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER cash_total");
+  }
+}
+
+ensure_shift_closings_schema($pdo);
+
 /**
  * Validate date format YYYY-MM-DD
  */
@@ -72,6 +99,8 @@ if ($path === "shifts" && $method === "GET") {
       s.expected_amount,
       s.actual_amount,
       s.difference,
+      s.cash_total,
+      s.transfer_total,
       s.notes,
       s.created_at
     FROM shift_closings s
@@ -91,6 +120,8 @@ if ($path === "shifts" && $method === "GET") {
     $r['expected_amount'] = (float)$r['expected_amount'];
     $r['actual_amount'] = (float)$r['actual_amount'];
     $r['difference'] = (float)$r['difference'];
+    $r['cash_total'] = (float)($r['cash_total'] ?? 0);
+    $r['transfer_total'] = (float)($r['transfer_total'] ?? 0);
   }
 
   respond(["success" => true, "data" => $rows], 200);
@@ -143,21 +174,40 @@ if ($path === "shifts/close" && $method === "POST") {
   $finalNotes = $note === '' ? $breakdown : ($note . " " . $breakdown);
 
   $sql = "
-    INSERT INTO shift_closings (user_id, shift_date, expected_amount, actual_amount, difference, notes, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, NOW())
+    INSERT INTO shift_closings (user_id, shift_date, expected_amount, actual_amount, difference, cash_total, transfer_total, notes, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
     ON DUPLICATE KEY UPDATE
       expected_amount=VALUES(expected_amount),
       actual_amount=VALUES(actual_amount),
       difference=VALUES(difference),
+      cash_total=VALUES(cash_total),
+      transfer_total=VALUES(transfer_total),
       notes=VALUES(notes)
   ";
   $st = $pdo->prepare($sql);
-  $st->execute([$uid, $shiftDate, $expected, $actual, $diff, $finalNotes]);
+  $st->execute([$uid, $shiftDate, $expected, $actual, $diff, $cashTotal, $transferTotal, $finalNotes]);
 
   // fetch record
   $st2 = $pdo->prepare("SELECT id FROM shift_closings WHERE user_id=? AND shift_date=? LIMIT 1");
   $st2->execute([$uid, $shiftDate]);
   $id = (int)$st2->fetchColumn();
+
+  audit_log($pdo, 'shift_closed', 'shift_closing', $id, [
+    'shift_date' => $shiftDate,
+    'expected_amount' => $expected,
+    'actual_amount' => $actual,
+    'difference' => $diff,
+    'cash_total' => $cashTotal,
+    'transfer_total' => $transferTotal,
+  ]);
+  if (abs($diff) > 0.009) {
+    audit_log($pdo, 'shift_difference_detected', 'shift_closing', $id, [
+      'shift_date' => $shiftDate,
+      'difference' => $diff,
+      'expected_amount' => $expected,
+      'actual_amount' => $actual,
+    ]);
+  }
 
   respond([
     "success" => true,
@@ -168,6 +218,8 @@ if ($path === "shifts/close" && $method === "POST") {
       "expected_amount" => $expected,
       "actual_amount" => $actual,
       "difference" => $diff,
+      "cash_total" => $cashTotal,
+      "transfer_total" => $transferTotal,
       "notes" => $finalNotes,
     ]
   ], 200);

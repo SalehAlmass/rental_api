@@ -2,7 +2,7 @@
 require_once __DIR__ . "/config.php";
 require_once __DIR__ . "/helpers.php";
 
-require_auth();
+$auth = require_auth();
 
 $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
@@ -65,6 +65,8 @@ function recalc_rent_financials(PDO $pdo, int $rentId): array {
  * GET    rents
  * GET    rents/{id}
  * GET    rents/{id}/financials     ✅ NEW
+ * GET    rents/{id}/collection-followups
+ * POST   rents/{id}/collection-followups
  * POST   rents                     (open)
  * PUT    rents/{id}                (edit notes فقط)
  * POST   rents/{id}/close
@@ -77,6 +79,111 @@ function to_float($v): float {
   return $x === '' ? 0.0 : (float)$x;
 }
 
+function fetch_collection_followups_for_rent(PDO $pdo, int $rentId): array {
+  $st = $pdo->prepare("SELECT f.*, u.name AS created_by_name
+                       FROM collection_followups f
+                       LEFT JOIN users u ON f.created_by_user_id = u.id
+                       WHERE f.rent_id = ?
+                       ORDER BY f.created_at DESC, f.id DESC");
+  $st->execute([$rentId]);
+  return $st->fetchAll(PDO::FETCH_ASSOC);
+}
+
+
+function fetch_client_latest_followup(PDO $pdo, int $clientId): ?array {
+  $st = $pdo->prepare("SELECT f.*, u.name AS created_by_name
+                       FROM collection_followups f
+                       LEFT JOIN users u ON f.created_by_user_id = u.id
+                       WHERE f.client_id = ?
+                       ORDER BY f.created_at DESC, f.id DESC
+                       LIMIT 1");
+  $st->execute([$clientId]);
+  $row = $st->fetch(PDO::FETCH_ASSOC);
+  return $row ?: null;
+}
+
+function fetch_client_latest_followup_today(PDO $pdo, int $clientId): ?array {
+  $st = $pdo->prepare("SELECT f.*, u.name AS created_by_name
+                       FROM collection_followups f
+                       LEFT JOIN users u ON f.created_by_user_id = u.id
+                       WHERE f.client_id = ? AND DATE(f.created_at) = CURDATE()
+                       ORDER BY f.created_at DESC, f.id DESC
+                       LIMIT 1");
+  $st->execute([$clientId]);
+  $row = $st->fetch(PDO::FETCH_ASSOC);
+  return $row ?: null;
+}
+
+function fetch_collection_agenda(PDO $pdo, string $sort = 'oldest'): array {
+  if ($sort === 'largest') {
+    $orderBy = 'remaining_amount DESC, overdue_since ASC, r.id DESC';
+  } elseif ($sort === 'scheduled') {
+    $orderBy = 'CASE WHEN latest.next_followup_at IS NULL THEN 1 ELSE 0 END ASC, latest.next_followup_at ASC, remaining_amount DESC, r.id DESC';
+  } else {
+    $orderBy = 'CASE WHEN latest.next_followup_at IS NULL THEN 1 ELSE 0 END ASC, overdue_since ASC, remaining_amount DESC, r.id DESC';
+  }
+
+  $sql = "SELECT
+            r.id,
+            r.client_id,
+            r.equipment_id,
+            r.start_datetime,
+            r.end_datetime,
+            r.status,
+            r.total_amount,
+            r.paid_amount,
+            r.remaining_amount,
+            c.name AS client_name,
+            e.name AS equipment_name,
+            CASE
+              WHEN LOWER(COALESCE(r.status, '')) = 'open' THEN r.start_datetime
+              ELSE COALESCE(r.closed_at, r.end_datetime, r.start_datetime)
+            END AS overdue_since,
+            latest.contact_type AS latest_contact_type,
+            latest.outcome AS latest_outcome,
+            latest.note AS latest_note,
+            latest.created_at AS latest_created_at,
+            latest.next_followup_at AS latest_next_followup_at,
+            latest.created_by_name AS latest_created_by_name,
+            today.contact_type AS today_contact_type,
+            today.outcome AS today_outcome,
+            today.note AS today_note,
+            today.created_at AS today_created_at,
+            today.created_by_name AS today_created_by_name
+          FROM rents r
+          INNER JOIN clients c ON c.id = r.client_id
+          INNER JOIN equipment e ON e.id = r.equipment_id
+          LEFT JOIN (
+            SELECT f.client_id, f.contact_type, f.outcome, f.note, f.created_at, f.next_followup_at, u.name AS created_by_name
+            FROM collection_followups f
+            INNER JOIN (
+              SELECT client_id, MAX(id) AS max_id
+              FROM collection_followups
+              GROUP BY client_id
+            ) x ON x.max_id = f.id
+            LEFT JOIN users u ON u.id = f.created_by_user_id
+          ) latest ON latest.client_id = r.client_id
+          LEFT JOIN (
+            SELECT f.client_id, f.contact_type, f.outcome, f.note, f.created_at, u.name AS created_by_name
+            FROM collection_followups f
+            INNER JOIN (
+              SELECT client_id, MAX(id) AS max_id
+              FROM collection_followups
+              WHERE DATE(created_at) = CURDATE()
+              GROUP BY client_id
+            ) y ON y.max_id = f.id
+            LEFT JOIN users u ON u.id = f.created_by_user_id
+          ) today ON today.client_id = r.client_id
+          WHERE (
+            (LOWER(COALESCE(r.status, '')) = 'open' AND TIMESTAMPDIFF(HOUR, r.start_datetime, NOW()) >= 24)
+            OR (LOWER(COALESCE(r.status, '')) = 'closed' AND COALESCE(r.remaining_amount, GREATEST(COALESCE(r.total_amount,0) - COALESCE(r.paid_amount,0),0)) > 0.009)
+          )
+          ORDER BY $orderBy
+          LIMIT 100";
+
+  $rows = $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+  return $rows ?: [];
+}
 function ok($data = null, int $code = 200) {
   respond(["success" => true, "data" => $data], $code);
 }
@@ -202,6 +309,103 @@ if (preg_match('#^rents/(\d+)/financials$#', $path, $m) && $method === "GET") {
   ]);
 }
 
+
+/* -----------------------------------------------------------
+| GET /rents/collection-agenda
+|----------------------------------------------------------- */
+if ($path === "rents/collection-agenda" && $method === "GET") {
+  $sort = strtolower(trim((string)($_GET['sort'] ?? 'oldest')));
+  if (!in_array($sort, ['oldest', 'largest'], true)) $sort = 'oldest';
+  ok(fetch_collection_agenda($pdo, $sort));
+}
+
+/* -----------------------------------------------------------
+| GET /rents/{id}/collection-followups
+|----------------------------------------------------------- */
+if (preg_match('#^rents/(\d+)/collection-followups$#', $path, $m) && $method === "GET") {
+  $rentId = (int)$m[1];
+
+  $st = $pdo->prepare("SELECT id, client_id FROM rents WHERE id=? LIMIT 1");
+  $st->execute([$rentId]);
+  $rent = $st->fetch(PDO::FETCH_ASSOC);
+  if (!$rent) fail("Rent not found", 404);
+
+  ok(fetch_collection_followups_for_rent($pdo, $rentId));
+}
+
+/* -----------------------------------------------------------
+| POST /rents/{id}/collection-followups
+|----------------------------------------------------------- */
+if (preg_match('#^rents/(\d+)/collection-followups$#', $path, $m) && $method === "POST") {
+  $rentId = (int)$m[1];
+  $in = json_in();
+  if (!$in) $in = $_POST;
+
+  $st = $pdo->prepare("SELECT id, client_id, status FROM rents WHERE id=? LIMIT 1");
+  $st->execute([$rentId]);
+  $rent = $st->fetch(PDO::FETCH_ASSOC);
+  if (!$rent) fail("Rent not found", 404);
+
+  $clientId = (int)($rent['client_id'] ?? 0);
+  $contactType = strtolower(trim((string)($in['contact_type'] ?? '')));
+  $outcome = strtolower(trim((string)($in['outcome'] ?? '')));
+  $note = trim((string)($in['note'] ?? ''));
+  $nextFollowupAt = trim((string)($in['next_followup_at'] ?? ''));
+  $createdBy = (int)($auth['sub'] ?? 0);
+
+  if (!in_array($contactType, ['call', 'whatsapp', 'visit', 'verbal', 'no_answer'], true)) {
+    fail("Invalid contact_type", 400);
+  }
+  if ($outcome !== '' && !in_array($outcome, ['promise_to_pay', 'follow_up_later', 'paid', 'customer_requested_delay', 'no_answer', 'other'], true)) {
+    fail("Invalid outcome", 400);
+  }
+
+  if ($note === '' && $outcome === '') {
+    fail("يجب إدخال ملاحظة أو نتيجة المتابعة", 400);
+  }
+
+  $allowDuplicateToday = !empty($in['allow_duplicate_today']);
+  $todayFollowup = fetch_client_latest_followup_today($pdo, $clientId);
+  if ($todayFollowup && !$allowDuplicateToday) {
+    fail('تم تسجيل تواصل لهذا العميل اليوم بالفعل', 409, [
+      'existing_followup' => $todayFollowup,
+      'can_override' => true,
+    ]);
+  }
+
+  $pdo->beginTransaction();
+  try {
+    $ins = $pdo->prepare("INSERT INTO collection_followups
+      (rent_id, client_id, contact_type, outcome, note, next_followup_at, created_by_user_id)
+      VALUES (?,?,?,?,?,?,?)");
+    $ins->execute([
+      $rentId,
+      $clientId,
+      $contactType,
+      $outcome !== '' ? $outcome : null,
+      $note !== '' ? $note : null,
+      $nextFollowupAt !== '' ? date('Y-m-d H:i:s', strtotime($nextFollowupAt)) : null,
+      $createdBy > 0 ? $createdBy : null,
+    ]);
+
+    $newId = (int)$pdo->lastInsertId();
+    audit_log($pdo, 'collection_followup_created', 'rent', $rentId, [
+      'followup_id' => $newId,
+      'client_id' => $clientId,
+      'contact_type' => $contactType,
+      'outcome' => $outcome !== '' ? $outcome : null,
+      'note' => $note !== '' ? $note : null,
+      'next_followup_at' => $nextFollowupAt !== '' ? date('Y-m-d H:i:s', strtotime($nextFollowupAt)) : null,
+    ]);
+
+    $pdo->commit();
+    ok(['id' => $newId], 201);
+  } catch (Throwable $e) {
+    if ($pdo->inTransaction()) $pdo->rollBack();
+    fail('Failed to save collection follow-up', 500, $e->getMessage());
+  }
+}
+
 /* -----------------------------------------------------------
 | POST /rents (فتح عقد)
 |----------------------------------------------------------- */
@@ -312,6 +516,14 @@ if (preg_match('#^rents/(\d+)/close$#', $path, $m) && $method === "POST") {
   $end = trim((string)($in["end_datetime"] ?? ""));
   if ($end === "") fail("end_datetime is required", 400);
 
+  $applySpecialPricing = !empty($in['apply_special_pricing']);
+  $paidAmount = to_float($in['paid_amount'] ?? 0);
+  $paymentMethod = trim((string)($in['payment_method'] ?? 'cash'));
+  $paymentNotes = trim((string)($in['payment_notes'] ?? ''));
+  $createReceipt = !empty($in['create_receipt']) && $paidAmount > 0;
+  $closingAt = date('Y-m-d H:i:s');
+  $closedBy = (int)($auth['sub'] ?? 0);
+
   $pdo->beginTransaction();
   try {
     $st = $pdo->prepare("SELECT * FROM rents WHERE id=? FOR UPDATE");
@@ -341,25 +553,118 @@ if (preg_match('#^rents/(\d+)/close$#', $path, $m) && $method === "POST") {
     $hours = to_float($hours);
 
     $rate  = to_float($rent["rate"] ?? 0);
+    $pricingCode = 'hourly';
+    $pricingLabel = 'احتساب بالساعات';
     $total = round($hours * $rate, 2);
+
+    if ($applySpecialPricing) {
+      if ($hours < 3) {
+        $total = round($rate * (2 / 3), 2);
+        $pricingCode = 'less_than_3h_two_thirds_day';
+        $pricingLabel = 'أقل من 3 ساعات = ثلثي السعر اليومي';
+      } else {
+        $total = round($rate, 2);
+        $pricingCode = 'more_than_3h_full_day';
+        $pricingLabel = '3 ساعات فأكثر = يوم كامل';
+      }
+    }
+
+    $paymentId = null;
+    $paymentStatus = $createReceipt ? 'created' : 'not_created';
 
     $upd = $pdo->prepare("
       UPDATE rents
-      SET end_datetime=?, hours=?, total_amount=?, status='closed'
+      SET end_datetime=?, hours=?, total_amount=?, status='closed',
+          closed_at=?, closed_by_user_id=?,
+          closing_paid_amount=?, closing_payment_method=?, closing_payment_status=?, closing_payment_id=?,
+          pricing_rule_code=?, pricing_rule_label=?, pricing_rule_applied=?
       WHERE id=?
     ");
-    $upd->execute([$end, $hours, $total, $id]);
+    $upd->execute([
+      $end,
+      $hours,
+      $total,
+      $closingAt,
+      $closedBy > 0 ? $closedBy : null,
+      $paidAmount,
+      $paymentMethod !== '' ? $paymentMethod : null,
+      $paymentStatus,
+      null,
+      $pricingCode,
+      $pricingLabel,
+      $applySpecialPricing ? 1 : 0,
+      $id,
+    ]);
 
-	    // ✅ update rent financials after final total is known
-	    recalc_rent_financials($pdo, $id);
+    if ($createReceipt) {
+      $idem = trim((string)($in['idempotency_key'] ?? ('rent_close_' . $id)));
+      $pay = $pdo->prepare("INSERT INTO payments (type, amount, client_id, rent_id, method, notes, user_id, idempotency_key, created_at)
+                            VALUES ('in', ?, ?, ?, ?, ?, ?, ?, NOW())");
+      $pay->execute([
+        $paidAmount,
+        (int)$rent['client_id'],
+        $id,
+        $paymentMethod !== '' ? $paymentMethod : 'cash',
+        $paymentNotes !== '' ? $paymentNotes : 'سند قبض تلقائي عند إغلاق العقد',
+        $closedBy > 0 ? $closedBy : null,
+        $idem,
+      ]);
+      $paymentId = (int)$pdo->lastInsertId();
+      $paymentStatus = 'created';
+
+      $pdo->prepare("UPDATE rents SET closing_payment_status=?, closing_payment_id=? WHERE id=?")
+          ->execute([$paymentStatus, $paymentId, $id]);
+    }
+
+    recalc_rent_financials($pdo, $id);
 
     $eqid = (int)$rent["equipment_id"];
     $upd2 = $pdo->prepare("UPDATE equipment SET status='available' WHERE id=?");
     $upd2->execute([$eqid]);
 
-	    audit_log($pdo, 'rent_closed', 'rent', $id, ['total_amount' => $total]);
-	    $pdo->commit();
-	    ok(["ok" => true, "total_amount" => $total]);
+    $fin = recalc_rent_financials($pdo, $id);
+
+    if ($applySpecialPricing) {
+      audit_log($pdo, 'manual_hour_pricing_used', 'rent', $id, [
+        'pricing_rule_code' => $pricingCode,
+        'pricing_rule_label' => $pricingLabel,
+        'hours' => $hours,
+        'total_amount' => $total,
+      ]);
+    }
+    if (!$createReceipt) {
+      audit_log($pdo, 'receipt_skipped_on_close', 'rent', $id, [
+        'closing_paid_amount' => $paidAmount,
+        'closing_payment_method' => $paymentMethod,
+        'closed_at' => $closingAt,
+      ]);
+    }
+
+    audit_log($pdo, 'rent_closed', 'rent', $id, [
+      'total_amount' => $total,
+      'hours' => $hours,
+      'apply_special_pricing' => $applySpecialPricing,
+      'pricing_rule_code' => $pricingCode,
+      'closing_paid_amount' => $paidAmount,
+      'closing_payment_method' => $paymentMethod,
+      'closing_payment_status' => $paymentStatus,
+      'closing_payment_id' => $paymentId,
+      'closed_at' => $closingAt,
+      'closed_by_user_id' => $closedBy,
+    ]);
+    $pdo->commit();
+    ok([
+      "ok" => true,
+      "total_amount" => $total,
+      "hours" => $hours,
+      "payment_id" => $paymentId,
+      "closing_payment_status" => $paymentStatus,
+      "pricing_rule_code" => $pricingCode,
+      "pricing_rule_label" => $pricingLabel,
+      "paid_amount" => $fin['paid_amount'] ?? 0,
+      "remaining_amount" => $fin['remaining_amount'] ?? max($total - $paidAmount, 0),
+      "is_paid" => $fin['is_paid'] ?? false,
+    ]);
 
   } catch (Throwable $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();

@@ -23,14 +23,18 @@ if ($path === "auth/login" && $method === "POST") {
   }
 
   $pdo = db();
+  ensure_financials_schema($pdo);
   $st = $pdo->prepare(
-    "SELECT id, username, role FROM users WHERE username=? AND password=?"
+    "SELECT id, username, role, is_active, permissions_json FROM users WHERE username=? AND password=?"
   );
   $st->execute([$username, $password]);
   $user = $st->fetch();
 
   if (!$user) {
     respond(["error" => "Invalid credentials"], 401);
+  }
+  if ((int)($user['is_active'] ?? 1) !== 1) {
+    respond(["error" => "الحساب غير مفعل"], 403);
   }
 
   global $JWT_SECRET;
@@ -43,7 +47,7 @@ if ($path === "auth/login" && $method === "POST") {
 
   respond([
     "token" => $token,
-    "user"  => $user
+    "user"  => ["id" => (int)$user["id"], "username" => $user["username"], "role" => $user["role"]]
   ], 200);
 }
 
@@ -60,8 +64,9 @@ if ($path === "auth/profile" && $method === "GET") {
   if ($userId <= 0) respond(["error" => "Unauthorized"], 401);
 
   $pdo = db();
+  ensure_financials_schema($pdo);
   $st = $pdo->prepare(
-    "SELECT id, username, role, is_active, created_at FROM users WHERE id=?"
+    "SELECT id, username, role, is_active, created_at, permissions_json FROM users WHERE id=?"
   );
   $st->execute([$userId]);
   $u = $st->fetch(PDO::FETCH_ASSOC);
@@ -69,6 +74,8 @@ if ($path === "auth/profile" && $method === "GET") {
 
   $u['id'] = (int)$u['id'];
   $u['is_active'] = (int)$u['is_active'];
+  $u['permissions'] = normalize_user_permissions($u['permissions_json'] ?? null, (string)($u['role'] ?? 'employee'));
+  $u = array_merge($u, effective_contract_closing_modes($pdo, $u));
 
   respond($u, 200);
 }
@@ -180,7 +187,7 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "PUT") {
   $st->execute($values);
 
   $user = $pdo->prepare(
-    "SELECT id, username, role, is_active, created_at FROM users WHERE id=?"
+    "SELECT id, username, role, is_active, created_at, permissions_json FROM users WHERE id=?"
   );
   $user->execute([$id]);
 
@@ -204,6 +211,52 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "DELETE") {
   $st->execute([(int)$m[1]]);
 
   respond(["message" => "User deleted"], 200);
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| REGISTER / CREATE USER (ADMIN)
+|--------------------------------------------------------------------------
+*/
+if ($path === "auth/register" && $method === "POST") {
+  $auth = require_auth();
+  if (($auth['role'] ?? '') !== 'admin') {
+    respond(["error" => "Forbidden"], 403);
+  }
+
+  $in = json_in();
+  $username = trim((string)($in["username"] ?? ""));
+  $password = trim((string)($in["password"] ?? ""));
+  $role = trim((string)($in["role"] ?? "employee"));
+  $permissions = normalize_user_permissions($in['permissions'] ?? null, $role);
+
+  if ($username === "" || $password === "") {
+    respond(["error" => "Missing fields"], 400);
+  }
+
+  $pdo = db();
+  ensure_financials_schema($pdo);
+  $check = $pdo->prepare("SELECT id FROM users WHERE username=?");
+  $check->execute([$username]);
+  if ($check->fetch()) {
+    respond(["error" => "Username already exists"], 409);
+  }
+
+  $st = $pdo->prepare(
+    "INSERT INTO users (username, password, role, is_active, created_at, permissions_json)
+     VALUES (?, ?, ?, 1, NOW(), ?)"
+  );
+  $st->execute([$username, $password, $role, json_encode($permissions, JSON_UNESCAPED_UNICODE)]);
+
+  respond([
+    "id" => (int)$pdo->lastInsertId(),
+    "username" => $username,
+    "role" => $role,
+    "is_active" => 1,
+    "permissions" => $permissions,
+    "created_at" => date("Y-m-d H:i:s")
+  ], 201);
 }
 
 /*
