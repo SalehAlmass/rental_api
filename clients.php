@@ -119,6 +119,8 @@ if (preg_match('#^clients/(\d+)$#', $path, $m) && $method === "PUT") {
   respond(["ok" => true, "id" => $id]);
 }
 
+
+
 /**
  * DELETE /clients/{id}
  */
@@ -136,5 +138,6 @@ if (preg_match('#^clients/(\d+)$#', $path, $m) && $method === "DELETE") {
 
   respond(["ok" => true, "id" => $id]);
 }
+
 
 respond(["error" => "Not Found"], 404);
