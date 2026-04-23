@@ -94,7 +94,9 @@ function ensure_financials_schema(PDO $pdo): void
   ensure_column($pdo, 'rents', 'pricing_rule_label', "ALTER TABLE rents ADD COLUMN pricing_rule_label VARCHAR(120) NULL");
   ensure_column($pdo, 'rents', 'pricing_rule_applied', "ALTER TABLE rents ADD COLUMN pricing_rule_applied TINYINT(1) NOT NULL DEFAULT 0");
 
-  // payments: idempotency
+  // payments: links and idempotency
+  ensure_column($pdo, 'payments', 'equipment_id', "ALTER TABLE payments ADD COLUMN equipment_id INT NULL");
+  ensure_index($pdo, 'payments', 'idx_payments_equipment', "CREATE INDEX idx_payments_equipment ON payments (equipment_id)");
   ensure_column($pdo, 'payments', 'idempotency_key', "ALTER TABLE payments ADD COLUMN idempotency_key VARCHAR(80) NULL");
   ensure_index($pdo, 'payments', 'uniq_payments_idem_key', "CREATE UNIQUE INDEX uniq_payments_idem_key ON payments (idempotency_key)");
 
@@ -305,4 +307,139 @@ function effective_contract_closing_modes(PDO $pdo, ?array $user = null): array
     'global_payment_receipt_mode' => $globalReceipt,
     'permissions' => $permissions,
   ];
+}
+
+function ensure_depreciation_schema(PDO $pdo): void
+{
+  ensure_column($pdo, 'equipment', 'purchase_price', "ALTER TABLE equipment ADD COLUMN purchase_price DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER hourly_rate");
+  ensure_column($pdo, 'equipment', 'salvage_value', "ALTER TABLE equipment ADD COLUMN salvage_value DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER purchase_price");
+  ensure_column($pdo, 'equipment', 'useful_life_months', "ALTER TABLE equipment ADD COLUMN useful_life_months INT NOT NULL DEFAULT 60 AFTER salvage_value");
+  ensure_column($pdo, 'equipment', 'depreciation_start_date', "ALTER TABLE equipment ADD COLUMN depreciation_start_date DATE NULL AFTER useful_life_months");
+  ensure_column($pdo, 'equipment', 'depreciation_monthly', "ALTER TABLE equipment ADD COLUMN depreciation_monthly DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER depreciation_rate");
+  ensure_column($pdo, 'equipment', 'depreciation_accumulated', "ALTER TABLE equipment ADD COLUMN depreciation_accumulated DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER depreciation_monthly");
+  ensure_column($pdo, 'equipment', 'book_value', "ALTER TABLE equipment ADD COLUMN book_value DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER depreciation_accumulated");
+  ensure_column($pdo, 'equipment', 'estimated_usage_days', "ALTER TABLE equipment ADD COLUMN estimated_usage_days INT NOT NULL DEFAULT 365 AFTER book_value");
+  ensure_column($pdo, 'equipment', 'operational_depreciation_per_day', "ALTER TABLE equipment ADD COLUMN operational_depreciation_per_day DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER estimated_usage_days");
+  ensure_column($pdo, 'equipment', 'operational_depreciation_accumulated', "ALTER TABLE equipment ADD COLUMN operational_depreciation_accumulated DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER operational_depreciation_per_day");
+  ensure_column($pdo, 'equipment', 'last_depreciation_month', "ALTER TABLE equipment ADD COLUMN last_depreciation_month CHAR(7) NULL AFTER operational_depreciation_accumulated");
+
+  ensure_table($pdo, 'equipment_depreciation_entries', "CREATE TABLE equipment_depreciation_entries (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    equipment_id INT NOT NULL,
+    depreciation_month CHAR(7) NOT NULL,
+    accounting_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+    operational_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+    voucher_payment_id INT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_equipment_dep_month (equipment_id, depreciation_month),
+    INDEX idx_equipment_dep_month (depreciation_month)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function depreciation_compute_values(array $row): array
+{
+  $purchase = isset($row['purchase_price']) ? (float)$row['purchase_price'] : 0.0;
+  $salvage = isset($row['salvage_value']) ? (float)$row['salvage_value'] : 0.0;
+  $lifeMonths = max(1, (int)($row['useful_life_months'] ?? 60));
+  $estimatedUsageDays = max(1, (int)($row['estimated_usage_days'] ?? 365));
+  $base = max($purchase - $salvage, 0.0);
+  $monthly = round($base / $lifeMonths, 2);
+  $perDay = round($base / $estimatedUsageDays, 2);
+  $accountingAccum = isset($row['depreciation_accumulated']) ? (float)$row['depreciation_accumulated'] : 0.0;
+  $bookValue = max($purchase - $accountingAccum, $salvage, 0.0);
+  return [
+    'purchase_price' => $purchase,
+    'salvage_value' => $salvage,
+    'useful_life_months' => $lifeMonths,
+    'estimated_usage_days' => $estimatedUsageDays,
+    'depreciation_monthly' => $monthly,
+    'operational_depreciation_per_day' => $perDay,
+    'book_value' => round($bookValue, 2),
+  ];
+}
+
+function update_equipment_depreciation_snapshot(PDO $pdo, int $equipmentId): void
+{
+  ensure_depreciation_schema($pdo);
+  $st = $pdo->prepare("SELECT * FROM equipment WHERE id=? LIMIT 1");
+  $st->execute([$equipmentId]);
+  $row = $st->fetch(PDO::FETCH_ASSOC);
+  if (!$row) return;
+  $vals = depreciation_compute_values($row);
+  $upd = $pdo->prepare("UPDATE equipment SET depreciation_monthly=?, operational_depreciation_per_day=?, book_value=? WHERE id=?");
+  $upd->execute([$vals['depreciation_monthly'], $vals['operational_depreciation_per_day'], $vals['book_value'], $equipmentId]);
+}
+
+function process_monthly_depreciation(PDO $pdo): void
+{
+  ensure_financials_schema($pdo);
+  ensure_depreciation_schema($pdo);
+  $month = date('Y-m');
+  $startMonth = date('Y-m-01 00:00:00');
+  $endMonth = date('Y-m-t 23:59:59');
+  $rows = $pdo->query("SELECT * FROM equipment WHERE COALESCE(is_active,1)=1")->fetchAll(PDO::FETCH_ASSOC);
+
+  foreach ($rows as $row) {
+    $equipmentId = (int)$row['id'];
+    $startDate = $row['depreciation_start_date'] ?? null;
+    if (!$startDate || substr((string)$startDate, 0, 7) > $month) {
+      update_equipment_depreciation_snapshot($pdo, $equipmentId);
+      continue;
+    }
+
+    $chk = $pdo->prepare("SELECT id FROM equipment_depreciation_entries WHERE equipment_id=? AND depreciation_month=? LIMIT 1");
+    $chk->execute([$equipmentId, $month]);
+    if ($chk->fetchColumn()) {
+      update_equipment_depreciation_snapshot($pdo, $equipmentId);
+      continue;
+    }
+
+    $vals = depreciation_compute_values($row);
+    $accountingAmount = (float)$vals['depreciation_monthly'];
+
+    $stDays = $pdo->prepare("SELECT COUNT(DISTINCT DATE(COALESCE(closed_at, end_datetime, start_datetime)))
+                             FROM rents
+                             WHERE equipment_id=?
+                               AND start_datetime <= ?
+                               AND COALESCE(closed_at, end_datetime, start_datetime) >= ?");
+    $stDays->execute([$equipmentId, $endMonth, $startMonth]);
+    $daysUsed = (int)$stDays->fetchColumn();
+    $operationalAmount = round($daysUsed * (float)$vals['operational_depreciation_per_day'], 2);
+
+    $pdo->beginTransaction();
+    try {
+      $paymentId = null;
+      if ($accountingAmount > 0.0001) {
+        $idem = 'dep_' . $equipmentId . '_' . $month;
+        $stPay = $pdo->prepare("SELECT id FROM payments WHERE idempotency_key=? LIMIT 1");
+        $stPay->execute([$idem]);
+        $paymentId = $stPay->fetchColumn();
+        if (!$paymentId) {
+          $insPay = $pdo->prepare("INSERT INTO payments (type, amount, client_id, rent_id, equipment_id, method, reference_no, notes, user_id, is_void, idempotency_key, created_at)
+                                   VALUES ('depreciation', ?, NULL, NULL, ?, 'system', ?, ?, NULL, 0, ?, NOW())");
+          $insPay->execute([
+            $accountingAmount,
+            $equipmentId,
+            'DEP-' . $month . '-' . $equipmentId,
+            'قيد إهلاك شهري تلقائي للمعدة #' . $equipmentId . ' عن شهر ' . $month,
+            $idem,
+          ]);
+          $paymentId = (int)$pdo->lastInsertId();
+        }
+      }
+
+      $ins = $pdo->prepare("INSERT INTO equipment_depreciation_entries (equipment_id, depreciation_month, accounting_amount, operational_amount, voucher_payment_id)
+                            VALUES (?,?,?,?,?)");
+      $ins->execute([$equipmentId, $month, $accountingAmount, $operationalAmount, $paymentId ?: null]);
+
+      $newAccum = min((float)($row['depreciation_accumulated'] ?? 0) + $accountingAmount, max((float)$vals['purchase_price'] - (float)$vals['salvage_value'], 0.0));
+      $newOperationalAccum = (float)($row['operational_depreciation_accumulated'] ?? 0) + $operationalAmount;
+      $newBook = max((float)$vals['purchase_price'] - $newAccum, (float)$vals['salvage_value'], 0.0);
+      $upd = $pdo->prepare("UPDATE equipment SET depreciation_monthly=?, operational_depreciation_per_day=?, depreciation_accumulated=?, operational_depreciation_accumulated=?, book_value=?, last_depreciation_month=? WHERE id=?");
+      $upd->execute([$vals['depreciation_monthly'], $vals['operational_depreciation_per_day'], round($newAccum,2), round($newOperationalAccum,2), round($newBook,2), $month, $equipmentId]);
+      $pdo->commit();
+    } catch (Throwable $e) {
+      if ($pdo->inTransaction()) $pdo->rollBack();
+    }
+  }
 }
