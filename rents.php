@@ -84,6 +84,8 @@ function normalize_rent_row(array $row): array {
   $row['paid_amount'] = isset($row['paid_amount']) ? to_float($row['paid_amount']) : 0.0;
   $row['remaining_amount'] = isset($row['remaining_amount']) ? to_float($row['remaining_amount']) : 0.0;
   $row['closing_paid_amount'] = isset($row['closing_paid_amount']) ? to_float($row['closing_paid_amount']) : 0.0;
+  $row['discount_amount'] = isset($row['discount_amount']) ? to_float($row['discount_amount']) : 0.0;
+  $row['discount_note'] = $row['discount_note'] ?? null;
 
   $row['is_paid'] = !empty($row['is_paid']) ? 1 : 0;
   $row['pricing_rule_applied'] = !empty($row['pricing_rule_applied']) ? 1 : 0;
@@ -609,6 +611,8 @@ if (preg_match('#^rents/(\d+)/close$#', $path, $m) && $method === "POST") {
 
   $applySpecialPricing = !empty($in['apply_special_pricing']);
   $paidAmount = to_float($in['paid_amount'] ?? 0);
+  $discountAmount = max(0.0, to_float($in['discount_amount'] ?? 0));
+  $discountNote = trim((string)($in['discount_note'] ?? ''));
   $paymentMethod = trim((string)($in['payment_method'] ?? 'cash'));
   $paymentNotes = trim((string)($in['payment_notes'] ?? ''));
   $createReceipt = !empty($in['create_receipt']) && $paidAmount > 0;
@@ -646,7 +650,11 @@ if (preg_match('#^rents/(\d+)/close$#', $path, $m) && $method === "POST") {
 
     // الاحتساب القياسي والخاص عندك في النهاية نفس القاعدة اليومية
     $calc = calc_daily_pricing($rate, $hours);
-    $total = to_float($calc['total']);
+    $grossTotal = to_float($calc['total']);
+    if ($discountAmount > $grossTotal) {
+      $discountAmount = $grossTotal;
+    }
+    $total = max($grossTotal - $discountAmount, 0.0);
     $pricingCode = (string)$calc['pricing_rule_code'];
     $pricingLabel = (string)$calc['pricing_rule_label'];
 
@@ -666,7 +674,8 @@ if (preg_match('#^rents/(\d+)/close$#', $path, $m) && $method === "POST") {
       SET end_datetime = ?, hours = ?, total_amount = ?, status = 'closed',
           closed_at = ?, closed_by_user_id = ?,
           closing_paid_amount = ?, closing_payment_method = ?, closing_payment_status = ?, closing_payment_id = ?,
-          pricing_rule_code = ?, pricing_rule_label = ?, pricing_rule_applied = ?
+          pricing_rule_code = ?, pricing_rule_label = ?, pricing_rule_applied = ?,
+          discount_amount = ?, discount_note = ?
       WHERE id = ?
     ");
     $upd->execute([
@@ -682,6 +691,8 @@ if (preg_match('#^rents/(\d+)/close$#', $path, $m) && $method === "POST") {
       $pricingCode,
       $pricingLabel,
       $applySpecialPricing ? 1 : 0,
+      $discountAmount,
+      $discountNote !== '' ? $discountNote : null,
       $id,
     ]);
 
@@ -720,6 +731,9 @@ if (preg_match('#^rents/(\d+)/close$#', $path, $m) && $method === "POST") {
         'pricing_rule_label' => $pricingLabel,
         'hours' => $hours,
         'total_amount' => $total,
+        'gross_total_amount' => $grossTotal,
+        'discount_amount' => $discountAmount,
+        'discount_note' => $discountNote !== '' ? $discountNote : null,
       ]);
     }
 
@@ -733,6 +747,9 @@ if (preg_match('#^rents/(\d+)/close$#', $path, $m) && $method === "POST") {
 
     audit_log($pdo, 'rent_closed', 'rent', $id, [
       'total_amount' => $total,
+      'gross_total_amount' => $grossTotal,
+      'discount_amount' => $discountAmount,
+      'discount_note' => $discountNote !== '' ? $discountNote : null,
       'hours' => $hours,
       'apply_special_pricing' => $applySpecialPricing,
       'pricing_rule_code' => $pricingCode,
@@ -749,6 +766,9 @@ if (preg_match('#^rents/(\d+)/close$#', $path, $m) && $method === "POST") {
     ok([
       "ok" => true,
       "total_amount" => $total,
+      "gross_total_amount" => $grossTotal,
+      "discount_amount" => $discountAmount,
+      "discount_note" => $discountNote !== '' ? $discountNote : null,
       "hours" => $hours,
       "payment_id" => $paymentId,
       "closing_payment_status" => $paymentStatus,

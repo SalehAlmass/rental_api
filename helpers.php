@@ -93,6 +93,8 @@ function ensure_financials_schema(PDO $pdo): void
   ensure_column($pdo, 'rents', 'pricing_rule_code', "ALTER TABLE rents ADD COLUMN pricing_rule_code VARCHAR(40) NULL");
   ensure_column($pdo, 'rents', 'pricing_rule_label', "ALTER TABLE rents ADD COLUMN pricing_rule_label VARCHAR(120) NULL");
   ensure_column($pdo, 'rents', 'pricing_rule_applied', "ALTER TABLE rents ADD COLUMN pricing_rule_applied TINYINT(1) NOT NULL DEFAULT 0");
+  ensure_column($pdo, 'rents', 'discount_amount', "ALTER TABLE rents ADD COLUMN discount_amount DECIMAL(12,2) NOT NULL DEFAULT 0");
+  ensure_column($pdo, 'rents', 'discount_note', "ALTER TABLE rents ADD COLUMN discount_note TEXT NULL");
 
   // payments: links and idempotency
   ensure_column($pdo, 'payments', 'equipment_id', "ALTER TABLE payments ADD COLUMN equipment_id INT NULL");
