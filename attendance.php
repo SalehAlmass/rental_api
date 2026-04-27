@@ -19,6 +19,7 @@ function ensure_attendance_schema(PDO $pdo): void {
     type ENUM('in','out') NOT NULL,
     ts DATETIME NOT NULL,
     method VARCHAR(20) NULL,
+    shift ENUM('morning','evening') NULL,
     note TEXT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_user_ts (user_id, ts)
@@ -33,6 +34,9 @@ function ensure_attendance_schema(PDO $pdo): void {
   } catch (Throwable $e) {}
   try {
     $pdo->exec("ALTER TABLE users ADD COLUMN salary_type ENUM('hourly','monthly') NULL");
+  } catch (Throwable $e) {}
+  try {
+    $pdo->exec("ALTER TABLE attendance_logs ADD COLUMN shift ENUM('morning','evening') NULL AFTER method");
   } catch (Throwable $e) {}
 }
 
@@ -68,17 +72,21 @@ function last_log(PDO $pdo, int $uid): ?array {
   return $row ?: null;
 }
 
-function _shift_bounds_for_ts(int $ts): array {
+function _shift_bounds_for_ts(int $ts, ?string $forcedShift = null): array {
   $day = date('Y-m-d', $ts);
-  $midday = strtotime($day . ' 12:00:00');
-  if ($ts < $midday) {
-    return [strtotime($day . ' ' . HR_MORNING_START), strtotime($day . ' ' . HR_MORNING_END), 'morning'];
+  $shift = in_array($forcedShift, ['morning', 'evening'], true) ? $forcedShift : null;
+  if ($shift === null) {
+    $midday = strtotime($day . ' 12:00:00');
+    $shift = $ts < $midday ? 'morning' : 'evening';
   }
-  return [strtotime($day . ' ' . HR_EVENING_START), strtotime($day . ' ' . HR_EVENING_END), 'evening'];
+  if ($shift === 'evening') {
+    return [strtotime($day . ' ' . HR_EVENING_START), strtotime($day . ' ' . HR_EVENING_END), 'evening'];
+  }
+  return [strtotime($day . ' ' . HR_MORNING_START), strtotime($day . ' ' . HR_MORNING_END), 'morning'];
 }
 
 function compute_hours(PDO $pdo, int $uid, string $from, string $to): float {
-  $st = $pdo->prepare("SELECT type, ts FROM attendance_logs
+  $st = $pdo->prepare("SELECT type, ts, shift FROM attendance_logs
                        WHERE user_id=? AND ts>=? AND ts<?
                        ORDER BY ts ASC, id ASC");
   $st->execute([$uid, $from, $to]);
@@ -86,15 +94,17 @@ function compute_hours(PDO $pdo, int $uid, string $from, string $to): float {
 
   $totalSec = 0;
   $openIn = null;
+  $openShift = null;
   foreach ($rows as $r) {
     $t = strtolower((string)$r['type']);
     $ts = strtotime((string)$r['ts']);
     if (!$ts) continue;
     if ($t === 'in') {
       $openIn = $ts;
+      $openShift = in_array(($r['shift'] ?? ''), ['morning','evening'], true) ? $r['shift'] : null;
     } elseif ($t === 'out') {
       if ($openIn !== null && $ts > $openIn) {
-        [$shiftStart, $shiftEnd] = _shift_bounds_for_ts($openIn);
+        [$shiftStart, $shiftEnd] = _shift_bounds_for_ts($openIn, $openShift);
         $startClamped = max($openIn, $shiftStart);
         $endClamped = min($ts, $shiftEnd);
         if ($endClamped > $startClamped) {
@@ -102,9 +112,9 @@ function compute_hours(PDO $pdo, int $uid, string $from, string $to): float {
         }
       }
       $openIn = null;
+      $openShift = null;
     }
   }
-  // لا نحتسب جلسة مفتوحة بدون خروج
   return round($totalSec / 3600, 2);
 }
 
@@ -157,14 +167,16 @@ if ($path === 'attendance/checkin' && $method === 'POST') {
   $methodName = $in['method'] ?? 'biometric';
   $note = $in['note'] ?? null;
   $ts = isset($in['ts']) ? to_dt((string)$in['ts']) : date('Y-m-d H:i:s');
+  $shift = in_array(($in['shift'] ?? ''), ['morning','evening'], true) ? $in['shift'] : null;
+  if ($shift === null) { [, , $shift] = _shift_bounds_for_ts(strtotime($ts)); }
 
   $last = last_log($pdo, $uid);
   if ($last && strtolower((string)$last['type']) === 'in') {
     respond(['success'=>false, 'error'=>'Already checked-in'], 409);
   }
 
-  $st = $pdo->prepare("INSERT INTO attendance_logs (user_id, type, ts, method, note) VALUES (?,?,?,?,?)");
-  $st->execute([$uid, 'in', $ts, $methodName, $note]);
+  $st = $pdo->prepare("INSERT INTO attendance_logs (user_id, type, ts, method, shift, note) VALUES (?,?,?,?,?,?)");
+  $st->execute([$uid, 'in', $ts, $methodName, $shift, $note]);
   respond(['success'=>true, 'data'=>['id'=>(int)$pdo->lastInsertId(), 'ts'=>$ts]]);
 }
 
@@ -176,6 +188,7 @@ if ($path === 'attendance/checkout' && $method === 'POST') {
   if (!$in) $in = $_POST;
   $methodName = $in['method'] ?? 'biometric';
   $note = $in['note'] ?? null;
+  $shift = in_array(($in['shift'] ?? ''), ['morning','evening'], true) ? $in['shift'] : null;
   $ts = isset($in['ts']) ? to_dt((string)$in['ts']) : date('Y-m-d H:i:s');
 
   $last = last_log($pdo, $uid);
@@ -183,8 +196,9 @@ if ($path === 'attendance/checkout' && $method === 'POST') {
     respond(['success'=>false, 'error'=>'Not checked-in'], 409);
   }
 
-  $st = $pdo->prepare("INSERT INTO attendance_logs (user_id, type, ts, method, note) VALUES (?,?,?,?,?)");
-  $st->execute([$uid, 'out', $ts, $methodName, $note]);
+  $st = $pdo->prepare("INSERT INTO attendance_logs (user_id, type, ts, method, shift, note) VALUES (?,?,?,?,?,?)");
+  if ($shift === null && $last && in_array(($last["shift"] ?? ""), ["morning","evening"], true)) $shift = $last["shift"];
+  $st->execute([$uid, 'out', $ts, $methodName, $shift, $note]);
   respond(['success'=>true, 'data'=>['id'=>(int)$pdo->lastInsertId(), 'ts'=>$ts]]);
 }
 
@@ -213,7 +227,7 @@ function _expected_in_ts(int $dayTs, string $shift): int {
 
 function compute_daily_metrics(PDO $pdo, int $uid, string $from, string $to): array {
   // Fetch logs for the user
-  $st = $pdo->prepare("SELECT type, ts FROM attendance_logs WHERE user_id=? AND ts>=? AND ts<=? ORDER BY ts ASC, id ASC");
+  $st = $pdo->prepare("SELECT type, ts, shift FROM attendance_logs WHERE user_id=? AND ts>=? AND ts<=? ORDER BY ts ASC, id ASC");
   $st->execute([$uid, $from, $to]);
   $rows = $st->fetchAll();
 
@@ -224,7 +238,7 @@ function compute_daily_metrics(PDO $pdo, int $uid, string $from, string $to): ar
     $ts = strtotime((string)$r['ts']);
     if (!$ts) continue;
     $day = date('Y-m-d', $ts);
-    [, , $shift] = _shift_bounds_for_ts($ts);
+    [, , $shift] = _shift_bounds_for_ts($ts, $r['shift'] ?? null);
     if (!isset($firstInByDay[$day]) || $ts < $firstInByDay[$day]['ts']) {
       $firstInByDay[$day] = ['ts' => $ts, 'shift' => $shift];
     }

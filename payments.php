@@ -160,6 +160,22 @@ if ($path === "payments" && $method === "POST") {
         respond(["error" => "client_id does not match rent's client_id"], 409);
       }
     }
+
+    if ($type === 'in' && strtolower((string)($rent['status'] ?? '')) === 'closed') {
+      $sumSt = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM payments WHERE rent_id=? AND type='in' AND (is_void=0 OR is_void IS NULL)");
+      $sumSt->execute([$rent_id]);
+      $paidBefore = (float)$sumSt->fetchColumn();
+      $total = (float)($rent['total_amount'] ?? 0);
+      $remaining = max($total - $paidBefore, 0);
+      if ($remaining > 0 && $amount - $remaining > 0.009) {
+        respond([
+          "error" => "المبلغ أكبر من المطلوب لهذا العقد",
+          "required_amount" => $remaining,
+          "paid_before" => $paidBefore,
+          "total_amount" => $total,
+        ], 400);
+      }
+    }
   }
 
   // ✅ إذا client_id موجود: تأكد العميل موجود
@@ -315,6 +331,22 @@ if (preg_match('#^payments/(\\d+)$#', $path, $m) && $method === "PUT") {
     } else {
       if ((int)$rent["client_id"] !== (int)$client_id) {
         respond(["error" => "client_id does not match rent's client_id"], 409);
+      }
+    }
+
+    if ($type === 'in' && strtolower((string)($rent['status'] ?? '')) === 'closed') {
+      $sumSt = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM payments WHERE rent_id=? AND type='in' AND (is_void=0 OR is_void IS NULL)");
+      $sumSt->execute([$rent_id]);
+      $paidBefore = (float)$sumSt->fetchColumn();
+      $total = (float)($rent['total_amount'] ?? 0);
+      $remaining = max($total - $paidBefore, 0);
+      if ($remaining > 0 && $amount - $remaining > 0.009) {
+        respond([
+          "error" => "المبلغ أكبر من المطلوب لهذا العقد",
+          "required_amount" => $remaining,
+          "paid_before" => $paidBefore,
+          "total_amount" => $total,
+        ], 400);
       }
     }
   }
