@@ -45,12 +45,12 @@ function is_ymd($s) {
 
 function build_date_filter($col, $from, $to, &$conds, &$params) {
   if ($from !== null && $from !== "") {
-    if (!is_ymd($from)) respond(["error" => "Invalid from date. Use YYYY-MM-DD"], 400);
+    if (!is_ymd($from)) respond(["error" => "تاريخ البداية غير صالح. استخدم YYYY-MM-DD"], 400);
     $conds[]  = "$col >= ?";
     $params[] = $from . " 00:00:00";
   }
   if ($to !== null && $to !== "") {
-    if (!is_ymd($to)) respond(["error" => "Invalid to date. Use YYYY-MM-DD"], 400);
+    if (!is_ymd($to)) respond(["error" => "تاريخ النهاية غير صالح. استخدم YYYY-MM-DD"], 400);
     $conds[]  = "$col <= ?";
     $params[] = $to . " 23:59:59";
   }
@@ -150,17 +150,17 @@ if ($path === "shifts" && $method === "GET") {
 */
 if ($path === "shifts/close" && $method === "POST") {
   $uid = (int)($auth['sub'] ?? 0);
-  if ($uid <= 0) respond(["error" => "Unauthorized"], 401);
+  if ($uid <= 0) respond(["error" => "غير مصرح"], 401);
 
   $in = json_in();
   $shiftDate = (string)($in['shift_date'] ?? date('Y-m-d'));
-  if (!is_ymd($shiftDate)) respond(["error" => "Invalid shift_date. Use YYYY-MM-DD"], 400);
+  if (!is_ymd($shiftDate)) respond(["error" => "تاريخ الوردية غير صالح. استخدم YYYY-MM-DD"], 400);
 
   $cashTotal = (float)($in['cash_total'] ?? 0);
   $transferTotal = (float)($in['transfer_total'] ?? 0);
   $cashInDrawer = $in['cash_in_drawer'] ?? $in['actual_amount'] ?? null;
   if ($cashInDrawer === null || $cashInDrawer === '') {
-    respond(["error" => "cash_in_drawer is required"], 422);
+    respond(["error" => "النقد في الدرج مطلوب"], 422);
   }
   $cashInDrawer = (float)$cashInDrawer;
 
@@ -225,4 +225,4 @@ if ($path === "shifts/close" && $method === "POST") {
   ], 200);
 }
 
-respond(["error" => "Not Found"], 404);
+respond(["error" => "غير موجود"], 404);

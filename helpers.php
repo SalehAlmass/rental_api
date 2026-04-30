@@ -235,13 +235,13 @@ function require_auth(): array
   }
 
   if (!preg_match('/Bearer\s+(.*)$/i', $hdr, $m))
-    respond(["error" => "Unauthorized"], 401);
+    respond(["error" => "غير مصرح"], 401);
 
   $payload = jwt_verify(trim($m[1]), $JWT_SECRET);
   if (!$payload)
-    respond(["error" => "Invalid token"], 401);
+    respond(["error" => "رمز الوصول غير صالح"], 401);
   if (isset($payload["exp"]) && time() > (int)$payload["exp"])
-    respond(["error" => "Token expired"], 401);
+    respond(["error" => "انتهت صلاحية الرمز"], 401);
 
   return $payload;
 }

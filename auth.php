@@ -19,7 +19,7 @@ if ($path === "auth/login" && $method === "POST") {
   $password = trim((string)($in["password"] ?? ""));
 
   if ($username === "" || $password === "") {
-    respond(["error" => "Missing fields"], 400);
+    respond(["error" => "حقول مفقودة"], 400);
   }
 
   $pdo = db();
@@ -31,7 +31,7 @@ if ($path === "auth/login" && $method === "POST") {
   $user = $st->fetch();
 
   if (!$user) {
-    respond(["error" => "Invalid credentials"], 401);
+    respond(["error" => "بيانات الدخول غير صحيحة"], 401);
   }
   if ((int)($user['is_active'] ?? 1) !== 1) {
     respond(["error" => "الحساب غير مفعل"], 403);
@@ -61,7 +61,7 @@ if ($path === "auth/profile" && $method === "GET") {
 
   $auth = require_auth();
   $userId = (int)($auth["sub"] ?? 0);
-  if ($userId <= 0) respond(["error" => "Unauthorized"], 401);
+  if ($userId <= 0) respond(["error" => "غير مصرح"], 401);
 
   $pdo = db();
   ensure_financials_schema($pdo);
@@ -70,7 +70,7 @@ if ($path === "auth/profile" && $method === "GET") {
   );
   $st->execute([$userId]);
   $u = $st->fetch(PDO::FETCH_ASSOC);
-  if (!$u) respond(["error" => "User not found"], 404);
+  if (!$u) respond(["error" => "المستخدم غير موجود"], 404);
 
   $u['id'] = (int)$u['id'];
   $u['is_active'] = (int)$u['is_active'];
@@ -89,7 +89,7 @@ if ($path === "users" && $method === "GET") {
 
   $auth = require_auth();
   if ($auth["role"] !== "admin") {
-    respond(["error" => "Forbidden"], 403);
+    respond(["error" => "ممنوع"], 403);
   }
 
   $pdo = db();
@@ -109,7 +109,7 @@ if ($path === "users" && $method === "POST") {
 
   $auth = require_auth();
   if ($auth["role"] !== "admin") {
-    respond(["error" => "Forbidden"], 403);
+    respond(["error" => "ممنوع"], 403);
   }
 
   $in = json_in();
@@ -126,7 +126,7 @@ if ($path === "users" && $method === "POST") {
   $check = $pdo->prepare("SELECT id FROM users WHERE username=?");
   $check->execute([$username]);
   if ($check->fetch()) {
-    respond(["error" => "Username already exists"], 409);
+    respond(["error" => "اسم المستخدم موجود بالفعل"], 409);
   }
 
   $st = $pdo->prepare(
@@ -153,7 +153,7 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "PUT") {
 
   $auth = require_auth();
   if ($auth["role"] !== "admin") {
-    respond(["error" => "Forbidden"], 403);
+    respond(["error" => "ممنوع"], 403);
   }
 
   $id = (int)$m[1];
@@ -175,7 +175,7 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "PUT") {
   }
 
   if (!$fields) {
-    respond(["error" => "Nothing to update"], 400);
+    respond(["error" => "لا شيء للتحديث"], 400);
   }
 
   $values[] = $id;
@@ -203,14 +203,14 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "DELETE") {
 
   $auth = require_auth();
   if ($auth["role"] !== "admin") {
-    respond(["error" => "Forbidden"], 403);
+    respond(["error" => "ممنوع"], 403);
   }
 
   $pdo = db();
   $st = $pdo->prepare("DELETE FROM users WHERE id=?");
   $st->execute([(int)$m[1]]);
 
-  respond(["message" => "User deleted"], 200);
+  respond(["message" => "تم حذف المستخدم"], 200);
 }
 
 
@@ -222,7 +222,7 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "DELETE") {
 if ($path === "auth/register" && $method === "POST") {
   $auth = require_auth();
   if (($auth['role'] ?? '') !== 'admin') {
-    respond(["error" => "Forbidden"], 403);
+    respond(["error" => "ممنوع"], 403);
   }
 
   $in = json_in();
@@ -232,7 +232,7 @@ if ($path === "auth/register" && $method === "POST") {
   $permissions = normalize_user_permissions($in['permissions'] ?? null, $role);
 
   if ($username === "" || $password === "") {
-    respond(["error" => "Missing fields"], 400);
+    respond(["error" => "حقول مفقودة"], 400);
   }
 
   $pdo = db();
@@ -240,7 +240,7 @@ if ($path === "auth/register" && $method === "POST") {
   $check = $pdo->prepare("SELECT id FROM users WHERE username=?");
   $check->execute([$username]);
   if ($check->fetch()) {
-    respond(["error" => "Username already exists"], 409);
+    respond(["error" => "اسم المستخدم موجود بالفعل"], 409);
   }
 
   $st = $pdo->prepare(

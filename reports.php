@@ -24,12 +24,12 @@ function is_ymd($s) {
  */
 function build_date_filter($col, $from, $to, &$conds, &$params) {
   if ($from !== null && $from !== "") {
-    if (!is_ymd($from)) respond(["error" => "Invalid from date. Use YYYY-MM-DD"], 400);
+    if (!is_ymd($from)) respond(["error" => "تاريخ البداية غير صالح. استخدم YYYY-MM-DD"], 400);
     $conds[]  = "$col >= ?";
     $params[] = $from . " 00:00:00";
   }
   if ($to !== null && $to !== "") {
-    if (!is_ymd($to)) respond(["error" => "Invalid to date. Use YYYY-MM-DD"], 400);
+    if (!is_ymd($to)) respond(["error" => "تاريخ النهاية غير صالح. استخدم YYYY-MM-DD"], 400);
     $conds[]  = "$col <= ?";
     $params[] = $to . " 23:59:59";
   }
@@ -320,7 +320,7 @@ if ($path === "reports/revenue" && $method === "GET") {
 
   $group = $_GET['group'] ?? 'day';
   if (!in_array($group, ['day','month','year'], true)) {
-    respond(["error" => "Invalid group. Use day|month|year"], 400);
+    respond(["error" => "مجموعة غير صالحة. استخدم day|month|year"], 400);
   }
 
   $from = $_GET['from'] ?? null;
@@ -502,7 +502,7 @@ if ($path === "reports/payments.csv" && $method === "GET") {
 // ------------------------------------------------------------
 if ($path === 'reports/attendance' && $method === 'GET') {
   if (strtolower((string)($auth['role'] ?? '')) !== 'admin') {
-    respond(['success'=>false, 'error'=>'Forbidden'], 403);
+    respond(['success'=>false, 'error'=>'ممنوع'], 403);
   }
 
   // Ensure tables exist (safe)
@@ -594,4 +594,4 @@ if ($path === 'reports/attendance' && $method === 'GET') {
   ]]);
 }
 
-respond(["error" => "Not Found"], 404);
+respond(["error" => "غير موجود"], 404);
