@@ -9,6 +9,7 @@ $method = $_SERVER["REQUEST_METHOD"];
 
 ensure_financials_schema($pdo);
 ensure_depreciation_schema($pdo);
+// تشغيل الإهلاك الشهري مرة واحدة فقط لكل شهر لتخفيف بطء جلب البيانات
 process_monthly_depreciation($pdo);
 
 function equipment_payload(PDO $pdo, array $in, array $current = []): array {
@@ -66,7 +67,9 @@ if ($path === "equipment" && $method === "GET") {
 if ($path === "equipment" && $method === "POST") {
   $in = json_in();
   $data = equipment_payload($pdo, $in);
-  if ($data['name'] === '' || $data['serial_no'] === '' || $data['daily_rate'] <= 0) {
+  $seriesCount = max(1, min(500, (int)($in['series_count'] ?? 1)));
+
+  if ($data['name'] === '' || $data['daily_rate'] <= 0) {
     respond(["error" => "Missing required fields"], 400);
   }
 
@@ -75,14 +78,39 @@ if ($path === "equipment" && $method === "POST") {
      purchase_price, salvage_value, useful_life_months, depreciation_start_date, depreciation_monthly,
      estimated_usage_days, operational_depreciation_per_day, book_value)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
-  $st->execute([
-    $data['name'], $data['model'], $data['serial_no'], $data['status'], $data['daily_rate'], $data['hourly_rate'],
-    $data['depreciation_rate'], $data['last_maintenance_date'], $data['is_active'],
-    $data['purchase_price'], $data['salvage_value'], $data['useful_life_months'], $data['depreciation_start_date'],
-    $data['depreciation_monthly'], $data['estimated_usage_days'], $data['operational_depreciation_per_day'],
-    $data['purchase_price']
-  ]);
-  respond(["id" => (int)$pdo->lastInsertId()], 201);
+
+  $createdIds = [];
+  $baseName = trim((string)$data['name']);
+  $baseSerial = trim((string)$data['serial_no']);
+
+  $pdo->beginTransaction();
+  try {
+    for ($i = 1; $i <= $seriesCount; $i++) {
+      $name = $seriesCount > 1 ? ($baseName . ' ' . $i) : $baseName;
+      $serial = $baseSerial !== ''
+        ? ($seriesCount > 1 ? ($baseSerial . ' ' . $i) : $baseSerial)
+        : null;
+
+      $st->execute([
+        $name, $data['model'], $serial, $data['status'], $data['daily_rate'], $data['hourly_rate'],
+        $data['depreciation_rate'], $data['last_maintenance_date'], $data['is_active'],
+        $data['purchase_price'], $data['salvage_value'], $data['useful_life_months'], $data['depreciation_start_date'],
+        $data['depreciation_monthly'], $data['estimated_usage_days'], $data['operational_depreciation_per_day'],
+        $data['purchase_price']
+      ]);
+      $createdIds[] = (int)$pdo->lastInsertId();
+    }
+    $pdo->commit();
+  } catch (Throwable $e) {
+    if ($pdo->inTransaction()) $pdo->rollBack();
+    respond(["error" => "Failed to create equipment", "details" => $e->getMessage()], 500);
+  }
+
+  respond([
+    "id" => $createdIds[0] ?? 0,
+    "ids" => $createdIds,
+    "created_count" => count($createdIds),
+  ], 201);
 }
 
 if (preg_match('#^equipment/(\d+)$#', $path, $m) && $method === "PUT") {

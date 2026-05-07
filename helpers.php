@@ -74,6 +74,20 @@ function ensure_table(PDO $pdo, string $table, string $ddl): void
  */
 function ensure_financials_schema(PDO $pdo): void
 {
+  // Fast schema guard: avoid dozens of INFORMATION_SCHEMA checks on every request.
+  try {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS app_settings (
+      setting_key VARCHAR(80) PRIMARY KEY,
+      setting_value TEXT NULL,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    $st = $pdo->prepare("SELECT setting_value FROM app_settings WHERE setting_key='schema.financials.version' LIMIT 1");
+    $st->execute();
+    if ((string)$st->fetchColumn() === '2026_05_perf_indexes_v1') {
+      return;
+    }
+  } catch (Throwable $e) {}
+
   // users: permission overrides for contract closing flow
   ensure_column($pdo, 'users', 'permissions_json', "ALTER TABLE users ADD COLUMN permissions_json LONGTEXT NULL");
 
@@ -136,6 +150,19 @@ function ensure_financials_schema(PDO $pdo): void
       INDEX idx_collection_followups_next_followup_at (next_followup_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
   ensure_column($pdo, 'collection_followups', 'created_by_user_id', "ALTER TABLE collection_followups ADD COLUMN created_by_user_id INT NULL");
+
+  // Performance indexes for frequent dashboard/rents/payments queries
+  ensure_index($pdo, 'rents', 'idx_rents_status_start', "CREATE INDEX idx_rents_status_start ON rents (status, start_datetime)");
+  ensure_index($pdo, 'rents', 'idx_rents_client_status', "CREATE INDEX idx_rents_client_status ON rents (client_id, status)");
+  ensure_index($pdo, 'rents', 'idx_rents_equipment_status', "CREATE INDEX idx_rents_equipment_status ON rents (equipment_id, status)");
+  ensure_index($pdo, 'rents', 'idx_rents_remaining', "CREATE INDEX idx_rents_remaining ON rents (remaining_amount)");
+  ensure_index($pdo, 'payments', 'idx_payments_rent_type_void', "CREATE INDEX idx_payments_rent_type_void ON payments (rent_id, type, is_void)");
+  ensure_index($pdo, 'payments', 'idx_payments_created_type', "CREATE INDEX idx_payments_created_type ON payments (created_at, type)");
+  ensure_index($pdo, 'equipment', 'idx_equipment_active_status', "CREATE INDEX idx_equipment_active_status ON equipment (is_active, status)");
+
+  try {
+    setting_set($pdo, 'schema.financials.version', '2026_05_perf_indexes_v1');
+  } catch (Throwable $e) {}
 }
 
 function setting_get(PDO $pdo, string $key, ?string $default = null): ?string
@@ -313,6 +340,13 @@ function effective_contract_closing_modes(PDO $pdo, ?array $user = null): array
 
 function ensure_depreciation_schema(PDO $pdo): void
 {
+  try {
+    $done = setting_get($pdo, 'schema.depreciation.version', null);
+    if ($done === '2026_05_depreciation_v1') {
+      return;
+    }
+  } catch (Throwable $e) {}
+
   ensure_column($pdo, 'equipment', 'purchase_price', "ALTER TABLE equipment ADD COLUMN purchase_price DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER hourly_rate");
   ensure_column($pdo, 'equipment', 'salvage_value', "ALTER TABLE equipment ADD COLUMN salvage_value DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER purchase_price");
   ensure_column($pdo, 'equipment', 'useful_life_months', "ALTER TABLE equipment ADD COLUMN useful_life_months INT NOT NULL DEFAULT 60 AFTER salvage_value");
@@ -336,6 +370,10 @@ function ensure_depreciation_schema(PDO $pdo): void
     UNIQUE KEY uniq_equipment_dep_month (equipment_id, depreciation_month),
     INDEX idx_equipment_dep_month (depreciation_month)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+  try {
+    setting_set($pdo, 'schema.depreciation.version', '2026_05_depreciation_v1');
+  } catch (Throwable $e) {}
 }
 
 function depreciation_compute_values(array $row): array
@@ -377,6 +415,17 @@ function process_monthly_depreciation(PDO $pdo): void
   ensure_financials_schema($pdo);
   ensure_depreciation_schema($pdo);
   $month = date('Y-m');
+
+  // Avoid scanning all equipment on every request. Once per month is enough.
+  try {
+    $doneMonth = setting_get($pdo, 'depreciation.processed_month', null);
+    if ($doneMonth === $month) {
+      return;
+    }
+  } catch (Throwable $e) {
+    // Continue safely if settings are not available yet.
+  }
+
   $startMonth = date('Y-m-01 00:00:00');
   $endMonth = date('Y-m-t 23:59:59');
   $rows = $pdo->query("SELECT * FROM equipment WHERE COALESCE(is_active,1)=1")->fetchAll(PDO::FETCH_ASSOC);
@@ -444,4 +493,8 @@ function process_monthly_depreciation(PDO $pdo): void
       if ($pdo->inTransaction()) $pdo->rollBack();
     }
   }
+
+  try {
+    setting_set($pdo, 'depreciation.processed_month', $month);
+  } catch (Throwable $e) {}
 }
