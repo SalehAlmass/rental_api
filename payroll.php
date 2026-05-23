@@ -35,17 +35,28 @@ ensure_attendance_schema($pdo);
 // HR rules (Friday holiday)
 // -----------------------------------------------------------------------------
 const HR_WEEKLY_HOLIDAY_DOW = 5; // 0=Sun..6=Sat (5=Fri)
-const HR_EXPECTED_IN = '08:00:00';
+const HR_MORNING_START = '06:00:00';
+const HR_MORNING_END   = '12:00:00';
+const HR_EVENING_START = '16:00:00';
+const HR_EVENING_END   = '21:00:00';
 const HR_GRACE_MINUTES = 15;
-const HR_WORKDAY_HOURS = 8;
+const HR_WORKDAY_HOURS = 11;
+
+function _shift_bounds_for_ts(int $ts): array {
+  $day = date('Y-m-d', $ts);
+  $midday = strtotime($day . ' 12:00:00');
+  if ($ts < $midday) return [strtotime($day . ' ' . HR_MORNING_START), strtotime($day . ' ' . HR_MORNING_END), 'morning'];
+  return [strtotime($day . ' ' . HR_EVENING_START), strtotime($day . ' ' . HR_EVENING_END), 'evening'];
+}
 
 function _is_workday(int $ts): bool {
   $dow = (int)date('w', $ts);
   return $dow !== HR_WEEKLY_HOLIDAY_DOW;
 }
 
-function _expected_in_ts(int $dayTs): int {
-  return strtotime(date('Y-m-d', $dayTs) . ' ' . HR_EXPECTED_IN);
+function _expected_in_ts(int $dayTs, string $shift): int {
+  $day = date('Y-m-d', $dayTs);
+  return strtotime($day . ' ' . ($shift === 'evening' ? HR_EVENING_START : HR_MORNING_START));
 }
 
 // Ensure schema exists (same as attendance.php but without routes)
@@ -81,7 +92,10 @@ function compute_hours(PDO $pdo, int $uid, string $from, string $to): float {
       $openIn = $ts;
     } elseif ($t === 'out') {
       if ($openIn !== null && $ts > $openIn) {
-        $totalSec += ($ts - $openIn);
+        [$shiftStart, $shiftEnd] = _shift_bounds_for_ts($openIn);
+        $startClamped = max($openIn, $shiftStart);
+        $endClamped = min($ts, $shiftEnd);
+        if ($endClamped > $startClamped) $totalSec += ($endClamped - $startClamped);
       }
       $openIn = null;
     }
@@ -103,7 +117,8 @@ function compute_daily_metrics(PDO $pdo, int $uid, string $from, string $to): ar
     $ts = strtotime((string)$r['ts']);
     if (!$ts) continue;
     $day = date('Y-m-d', $ts);
-    if (!isset($firstInByDay[$day]) || $ts < $firstInByDay[$day]) $firstInByDay[$day] = $ts;
+    [, , $shift] = _shift_bounds_for_ts($ts);
+    if (!isset($firstInByDay[$day]) || $ts < $firstInByDay[$day]['ts']) $firstInByDay[$day] = ['ts'=>$ts, 'shift'=>$shift];
   }
 
   $presentDays = 0;
@@ -122,8 +137,10 @@ function compute_daily_metrics(PDO $pdo, int $uid, string $from, string $to): ar
       continue;
     }
     $presentDays++;
-    $expected = _expected_in_ts($t) + (HR_GRACE_MINUTES * 60);
-    $actual = $firstInByDay[$day];
+    $actualInfo = $firstInByDay[$day];
+    $actual = (int)$actualInfo['ts'];
+    $shift = (string)$actualInfo['shift'];
+    $expected = _expected_in_ts($t, $shift) + (HR_GRACE_MINUTES * 60);
     if ($actual > $expected) $lateMinutes += (int)floor(($actual - $expected) / 60);
   }
 

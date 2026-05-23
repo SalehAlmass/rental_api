@@ -13,12 +13,12 @@ function is_ymd($s) {
 
 function build_date_filter($col, $from, $to, &$conds, &$params) {
   if ($from !== null && $from !== "") {
-    if (!is_ymd($from)) respond(["error"=>"Invalid from date. Use YYYY-MM-DD"], 400);
+    if (!is_ymd($from)) respond(["error"=>"تاريخ البداية غير صالح. استخدم YYYY-MM-DD"], 400);
     $conds[]  = "$col >= ?";
     $params[] = $from . " 00:00:00";
   }
   if ($to !== null && $to !== "") {
-    if (!is_ymd($to)) respond(["error"=>"Invalid to date. Use YYYY-MM-DD"], 400);
+    if (!is_ymd($to)) respond(["error"=>"تاريخ النهاية غير صالح. استخدم YYYY-MM-DD"], 400);
     $conds[]  = "$col <= ?";
     $params[] = $to . " 23:59:59";
   }
@@ -30,7 +30,7 @@ function build_date_filter($col, $from, $to, &$conds, &$params) {
  */
 if ($path === "print/contract" && $method === "GET") {
   $id = (int)($_GET["id"] ?? 0);
-  if ($id <= 0) respond(["error"=>"id required"], 422);
+  if ($id <= 0) respond(["error"=>"المعرف مطلوب"], 422);
 
   // 1) rent header
   $st = $pdo->prepare("
@@ -57,7 +57,7 @@ if ($path === "print/contract" && $method === "GET") {
   ");
   $st->execute([$id]);
   $rent = $st->fetch(PDO::FETCH_ASSOC);
-  if (!$rent) respond(["error"=>"Rent not found"], 404);
+  if (!$rent) respond(["error"=>"التأجير غير موجود"], 404);
 
   // 2) items (عدّل اسم الجدول لو مختلف عندك)
   // شائع: rent_items أو rent_equipment أو rent_lines
@@ -104,7 +104,7 @@ if ($path === "print/contract" && $method === "GET") {
  */
 if ($path === "print/client-statement" && $method === "GET") {
   $clientId = (int)($_GET["client_id"] ?? 0);
-  if ($clientId <= 0) respond(["error"=>"client_id required"], 422);
+  if ($clientId <= 0) respond(["error"=>"معرف العميل مطلوب"], 422);
 
   $from = $_GET["from"] ?? null;
   $to   = $_GET["to"] ?? null;
@@ -112,7 +112,7 @@ if ($path === "print/client-statement" && $method === "GET") {
   $cst = $pdo->prepare("SELECT id, name, phone, national_id, address FROM clients WHERE id=?");
   $cst->execute([$clientId]);
   $client = $cst->fetch(PDO::FETCH_ASSOC);
-  if (!$client) respond(["error"=>"Client not found"], 404);
+  if (!$client) respond(["error"=>"العميل غير موجود"], 404);
 
   // rents
   $conds = ["r.client_id=?"];
@@ -167,4 +167,4 @@ if ($path === "print/client-statement" && $method === "GET") {
   ], 200);
 }
 
-respond(["error"=>"Not Found"], 404);
+respond(["error"=>"غير موجود"], 404);

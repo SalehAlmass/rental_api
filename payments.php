@@ -11,6 +11,8 @@ $pdo    = db();
 
 // ✅ auto-migrate: rent financial state + idempotency + audit log
 ensure_financials_schema($pdo);
+ensure_depreciation_schema($pdo);
+process_monthly_depreciation($pdo);
 
 /**
  * Recalculate and persist the rent financial state.
@@ -115,10 +117,12 @@ if ($path === "payments" && $method === "GET") {
 
   $sql = "SELECT p.*,
                  c.name AS client_name,
-                 r.id   AS rent_no
+                 r.id   AS rent_no,
+                 eq.name AS equipment_name
           FROM payments p
           LEFT JOIN clients c ON p.client_id = c.id
           LEFT JOIN rents   r ON p.rent_id = r.id
+          LEFT JOIN equipment eq ON p.equipment_id = eq.id
           $where
           ORDER BY p.id DESC";
 
@@ -139,7 +143,7 @@ if ($path === "payments" && $method === "POST") {
   $type   = trim((string)($in["type"] ?? ""));
   $amount = (float)($in["amount"] ?? 0);
 
-  if ($type !== "in" && $type !== "out") respond(["error"=>"type must be in|out"], 400);
+  if (!in_array($type, ["in","out","depreciation"], true)) respond(["error"=>"type must be in|out|depreciation"], 400);
   if ($amount <= 0) respond(["error"=>"amount must be > 0"], 400);
 
   $client_id = (isset($in["client_id"]) && $in["client_id"] !== "") ? (int)$in["client_id"] : null;
@@ -157,6 +161,22 @@ if ($path === "payments" && $method === "POST") {
         respond(["error" => "client_id does not match rent's client_id"], 409);
       }
     }
+
+    if ($type === 'in' && strtolower((string)($rent['status'] ?? '')) === 'closed') {
+      $sumSt = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM payments WHERE rent_id=? AND type='in' AND (is_void=0 OR is_void IS NULL)");
+      $sumSt->execute([$rent_id]);
+      $paidBefore = (float)$sumSt->fetchColumn();
+      $total = (float)($rent['total_amount'] ?? 0);
+      $remaining = max($total - $paidBefore, 0);
+      if ($remaining > 0 && $amount - $remaining > 0.009) {
+        respond([
+          "error" => "المبلغ أكبر من المطلوب لهذا العقد",
+          "required_amount" => $remaining,
+          "paid_before" => $paidBefore,
+          "total_amount" => $total,
+        ], 400);
+      }
+    }
   }
 
   // ✅ إذا client_id موجود: تأكد العميل موجود
@@ -164,6 +184,7 @@ if ($path === "payments" && $method === "POST") {
     if (!fetch_client($pdo, $client_id)) respond(["error" => "Client not found"], 404);
   }
 
+  $equipment_id = (isset($in["equipment_id"]) && $in["equipment_id"] !== "") ? (int)$in["equipment_id"] : null;
   $methodPay = $in["method"] ?? "cash";
   $ref   = $in["reference_no"] ?? null;
   $notes = $in["notes"] ?? null;
@@ -219,9 +240,9 @@ if ($path === "payments" && $method === "POST") {
         }
       }
 
-      $st = $pdo->prepare("INSERT INTO payments (type, amount, client_id, rent_id, method, reference_no, notes, user_id, is_void, idempotency_key)
-                           VALUES (?,?,?,?,?,?,?,?,0,?)");
-      $st->execute([$type, $amount, $client_id, $rent_id, $methodPay, $ref, $notes, ($uid > 0 ? $uid : null), $idemKey]);
+      $st = $pdo->prepare("INSERT INTO payments (type, amount, client_id, rent_id, equipment_id, method, reference_no, notes, user_id, is_void, idempotency_key)
+                           VALUES (?,?,?,?,?,?,?,?,?,0,?)");
+      $st->execute([$type, $amount, $client_id, $rent_id, $equipment_id, $methodPay, $ref, $notes, ($uid > 0 ? $uid : null), $idemKey]);
       $newId = (int)$pdo->lastInsertId();
 
       // update rent financials after insert
@@ -244,9 +265,9 @@ if ($path === "payments" && $method === "POST") {
   }
 
   // default insert (general payments or OUT payments)
-  $st = $pdo->prepare("INSERT INTO payments (type, amount, client_id, rent_id, method, reference_no, notes, user_id, is_void, idempotency_key)
-                       VALUES (?,?,?,?,?,?,?,?,0,?)");
-  $st->execute([$type, $amount, $client_id, $rent_id, $methodPay, $ref, $notes, ($uid > 0 ? $uid : null), $idemKey]);
+  $st = $pdo->prepare("INSERT INTO payments (type, amount, client_id, rent_id, equipment_id, method, reference_no, notes, user_id, is_void, idempotency_key)
+                       VALUES (?,?,?,?,?,?,?,?,?,0,?)");
+  $st->execute([$type, $amount, $client_id, $rent_id, $equipment_id, $methodPay, $ref, $notes, ($uid > 0 ? $uid : null), $idemKey]);
 
   $newId = (int)$pdo->lastInsertId();
   audit_log($pdo, 'payment_created', 'payment', $newId, ['rent_id' => $rent_id, 'amount' => $amount, 'type' => $type]);
@@ -280,7 +301,7 @@ if (preg_match('#^payments/(\\d+)$#', $path, $m) && $method === "PUT") {
   }
 
   $type = array_key_exists("type", $in) ? trim((string)$in["type"]) : (string)$pay["type"];
-  if ($type !== "in" && $type !== "out") respond(["error"=>"type must be in|out"], 400);
+  if (!in_array($type, ["in","out","depreciation"], true)) respond(["error"=>"type must be in|out|depreciation"], 400);
 
   $amount = isset($in["amount"]) ? (float)$in["amount"] : (float)$pay["amount"];
   if ($amount <= 0) respond(["error" => "amount must be > 0"], 400);
@@ -297,6 +318,10 @@ if (preg_match('#^payments/(\\d+)$#', $path, $m) && $method === "PUT") {
       ? (($in["rent_id"] === null || $in["rent_id"] === "") ? null : (int)$in["rent_id"])
       : ($pay["rent_id"] !== null ? (int)$pay["rent_id"] : null);
 
+  $equipment_id = array_key_exists("equipment_id", $in)
+      ? (($in["equipment_id"] === null || $in["equipment_id"] === "") ? null : (int)$in["equipment_id"])
+      : ($pay["equipment_id"] !== null ? (int)$pay["equipment_id"] : null);
+
   // ✅ إذا rent_id موجود: لازم العقد موجود + client_id يطابقه (أو نأخذه تلقائيًا)
   if ($rent_id !== null && $rent_id > 0) {
     $rent = fetch_rent($pdo, $rent_id);
@@ -309,6 +334,22 @@ if (preg_match('#^payments/(\\d+)$#', $path, $m) && $method === "PUT") {
         respond(["error" => "client_id does not match rent's client_id"], 409);
       }
     }
+
+    if ($type === 'in' && strtolower((string)($rent['status'] ?? '')) === 'closed') {
+      $sumSt = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM payments WHERE rent_id=? AND type='in' AND (is_void=0 OR is_void IS NULL)");
+      $sumSt->execute([$rent_id]);
+      $paidBefore = (float)$sumSt->fetchColumn();
+      $total = (float)($rent['total_amount'] ?? 0);
+      $remaining = max($total - $paidBefore, 0);
+      if ($remaining > 0 && $amount - $remaining > 0.009) {
+        respond([
+          "error" => "المبلغ أكبر من المطلوب لهذا العقد",
+          "required_amount" => $remaining,
+          "paid_before" => $paidBefore,
+          "total_amount" => $total,
+        ], 400);
+      }
+    }
   }
 
   // ✅ إذا client_id موجود: تأكد العميل موجود
@@ -317,9 +358,9 @@ if (preg_match('#^payments/(\\d+)$#', $path, $m) && $method === "PUT") {
   }
 
   $upd = $pdo->prepare("UPDATE payments
-                        SET type=?, amount=?, client_id=?, rent_id=?, method=?, reference_no=?, notes=?
+                        SET type=?, amount=?, client_id=?, rent_id=?, equipment_id=?, method=?, reference_no=?, notes=?
                         WHERE id=?");
-  $upd->execute([$type, $amount, $client_id, $rent_id, $methodPay, $ref, $notes, $id]);
+  $upd->execute([$type, $amount, $client_id, $rent_id, $equipment_id, $methodPay, $ref, $notes, $id]);
 
   respond(["ok" => true]);
 }

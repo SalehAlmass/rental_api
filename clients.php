@@ -7,6 +7,7 @@ require_auth();
 $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
+ensure_financials_schema($pdo);
 
 /**
  * يدعم JSON + form-data
@@ -42,6 +43,27 @@ if ($path === "clients" && $method === "GET") {
 }
 
 /**
+ * GET /clients/{id}/collection-followups
+ */
+if (preg_match('#^clients/(\d+)/collection-followups$#', $path, $m) && $method === "GET") {
+  $id = (int)$m[1];
+
+  $chk = $pdo->prepare("SELECT id FROM clients WHERE id=? LIMIT 1");
+  $chk->execute([$id]);
+  if (!$chk->fetch()) respond(["error" => "العميل غير موجود"], 404);
+
+  $st = $pdo->prepare("SELECT f.*, r.id AS rent_no, u.name AS created_by_name
+                       FROM collection_followups f
+                       LEFT JOIN rents r ON f.rent_id = r.id
+                       LEFT JOIN users u ON f.created_by_user_id = u.id
+                       WHERE f.client_id = ?
+                       ORDER BY f.created_at DESC, f.id DESC
+                       LIMIT 50");
+  $st->execute([$id]);
+  respond($st->fetchAll());
+}
+
+/**
  * POST /clients
  */
 if ($path === "clients" && $method === "POST") {
@@ -55,7 +77,7 @@ if ($path === "clients" && $method === "POST") {
   $credit_limit = (float)($in["credit_limit"] ?? 0);
   $image_path   = $in["image_path"] ?? null;
 
-  if ($name === "") respond(["error" => "name is required"], 400);
+  if ($name === "") respond(["error" => "الاسم مطلوب"], 400);
 
   $stChk = $pdo->prepare("SELECT id FROM clients WHERE name = ? OR (national_id != '' AND national_id = ?) OR (phone != '' AND phone = ?)");
   $stChk->execute([$name, $national_id, $phone]);
@@ -91,7 +113,7 @@ if (preg_match('#^clients/(\d+)$#', $path, $m) && $method === "GET") {
   $st = $pdo->prepare($sql);
   $st->execute([$id]);
   $row = $st->fetch(PDO::FETCH_ASSOC);
-  if (!$row) respond(["error" => "Client not found"], 404);
+  if (!$row) respond(["error" => "العميل غير موجود"], 404);
   $row['total_debt'] = (float)($row['total_debt'] ?? 0);
   respond(["success" => true, "data" => $row]);
 }
@@ -107,7 +129,7 @@ if (preg_match('#^clients/(\d+)$#', $path, $m) && $method === "PUT") {
   $chk = $pdo->prepare("SELECT * FROM clients WHERE id=?");
   $chk->execute([$id]);
   $currentClient = $chk->fetch(PDO::FETCH_ASSOC);
-  if (!$currentClient) respond(["error" => "Client not found"], 404);
+  if (!$currentClient) respond(["error" => "العميل غير موجود"], 404);
 
   $newName = array_key_exists('name', $in) ? trim((string)$in['name']) : $currentClient['name'];
   $newNatId = array_key_exists('national_id', $in) ? trim((string)$in['national_id']) : $currentClient['national_id'];
@@ -142,7 +164,7 @@ if (preg_match('#^clients/(\d+)$#', $path, $m) && $method === "PUT") {
     }
   }
 
-  if (empty($fields)) respond(["error" => "No fields to update"], 400);
+  if (empty($fields)) respond(["error" => "لا توجد حقول للتحديث"], 400);
 
   $params[] = $id;
   $sql = "UPDATE clients SET " . implode(", ", $fields) . " WHERE id = ?";
@@ -151,6 +173,8 @@ if (preg_match('#^clients/(\d+)$#', $path, $m) && $method === "PUT") {
 
   respond(["ok" => true, "id" => $id]);
 }
+
+
 
 /**
  * DELETE /clients/{id}
@@ -164,38 +188,10 @@ if (preg_match('#^clients/(\d+)$#', $path, $m) && $method === "DELETE") {
     $st = $pdo->prepare("DELETE FROM clients WHERE id=?");
     $st->execute([$id]);
   } catch (PDOException $e) {
-    respond(["error" => "Cannot delete client (has related records)"], 409);
+    respond(["error" => "لا يمكن حذف العميل (لوجود سجلات مرتبطة)"], 409);
   }
 
   respond(["ok" => true, "id" => $id]);
 }
 
-/**
- * GET /clients/{id}/collection-followups
- */
-if (preg_match('#^clients/(\d+)/collection-followups$#', $path, $m) && $method === "GET") {
-  $clientId = (int)$m[1];
-
-  $st = $pdo->prepare("
-    SELECT cf.*, u.username AS created_by_name
-    FROM collection_followups cf
-    LEFT JOIN users u ON cf.user_id = u.id
-    WHERE cf.client_id = ?
-    ORDER BY cf.created_at DESC
-  ");
-  $st->execute([$clientId]);
-  $rows = $st->fetchAll(PDO::FETCH_ASSOC);
-
-  foreach ($rows as &$r) {
-    $r['id'] = (int)$r['id'];
-    $r['rent_id'] = (int)$r['rent_id'];
-    $r['rent_no'] = (int)$r['rent_id'];
-    $r['client_id'] = (int)$r['client_id'];
-    $r['user_id'] = $r['user_id'] !== null ? (int)$r['user_id'] : null;
-    $r['created_by_user_id'] = $r['user_id'];
-  }
-
-  respond(["data" => $rows]);
-}
-
-respond(["error" => "Not Found"], 404);
+respond(["error" => "غير موجود"], 404);
