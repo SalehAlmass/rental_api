@@ -45,6 +45,9 @@ switch (true) {
   case str_starts_with($path, "payroll"):
     require_once __DIR__ . "/payroll.php";
     break;
+  case str_starts_with($path, "settings"):
+    require_once __DIR__ . "/settings.php";
+    break;
   default:
     respond(["ok"=>true, "service"=>"rental_api_php_fixed", "path"=>$path], 200);
 }

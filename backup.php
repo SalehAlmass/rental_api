@@ -212,6 +212,18 @@ if ($path === "backup/create" && $method === "POST") {
   try {
     $sql = dump_database($pdo, $type);
     file_put_contents($fullpath, $sql);
+
+    // ✅ Auto-prune: keep only the latest 30 backups
+    $allBackups = glob($backupDir . "/backup_*.sql") ?: [];
+    usort($allBackups, function($a, $b) { return filemtime($b) - filemtime($a); });
+    $maxKeep = 30;
+    if (count($allBackups) > $maxKeep) {
+      $toDelete = array_slice($allBackups, $maxKeep);
+      foreach ($toDelete as $old) {
+        @unlink($old);
+      }
+    }
+
     respond([
       "success" => true,
       "data" => [

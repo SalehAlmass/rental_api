@@ -67,6 +67,8 @@ function ensure_financials_schema(PDO $pdo): void {
   ensure_column($pdo, 'rents', 'remaining_amount', "ALTER TABLE rents ADD COLUMN remaining_amount DECIMAL(12,2) NOT NULL DEFAULT 0");
   ensure_column($pdo, 'rents', 'is_paid', "ALTER TABLE rents ADD COLUMN is_paid TINYINT(1) NOT NULL DEFAULT 0");
   ensure_column($pdo, 'rents', 'paid_at', "ALTER TABLE rents ADD COLUMN paid_at DATETIME NULL");
+  ensure_column($pdo, 'rents', 'discount_amount', "ALTER TABLE rents ADD COLUMN discount_amount DECIMAL(12,2) NOT NULL DEFAULT 0");
+  ensure_column($pdo, 'rents', 'discount_note', "ALTER TABLE rents ADD COLUMN discount_note TEXT NULL");
 
   // payments: idempotency
   ensure_column($pdo, 'payments', 'idempotency_key', "ALTER TABLE payments ADD COLUMN idempotency_key VARCHAR(80) NULL");
@@ -82,6 +84,50 @@ function ensure_financials_schema(PDO $pdo): void {
       entity_id INT NULL,
       meta JSON NULL,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+  // rent_items: multiple equipment per rent
+  ensure_table($pdo, 'rent_items', "CREATE TABLE rent_items (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      rent_id INT NOT NULL,
+      equipment_id INT NOT NULL,
+      rate DECIMAL(12,2) NOT NULL DEFAULT 0,
+      notes TEXT NULL,
+      status VARCHAR(32) NOT NULL DEFAULT 'open',
+      start_datetime DATETIME NULL,
+      end_datetime DATETIME NULL,
+      replaced_by_id INT NULL,
+      INDEX(rent_id),
+      INDEX(equipment_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+  // auto-migrate existing single-equipment rents into rent_items
+  try {
+    $stCount = $pdo->query("SELECT COUNT(*) FROM rent_items");
+    if (((int)$stCount->fetchColumn()) === 0) {
+      $pdo->exec("
+        INSERT INTO rent_items (rent_id, equipment_id, rate, notes, status, start_datetime, end_datetime)
+        SELECT id, equipment_id, rate, notes, status, start_datetime, end_datetime
+        FROM rents
+        WHERE equipment_id IS NOT NULL AND equipment_id > 0
+      ");
+    }
+  } catch (Throwable $e) {}
+
+  // collection_followups: متابعات التحصيل
+  ensure_table($pdo, 'collection_followups', "CREATE TABLE collection_followups (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      rent_id INT NOT NULL,
+      client_id INT NOT NULL,
+      user_id INT NULL,
+      contact_type VARCHAR(32) NOT NULL DEFAULT 'call',
+      outcome VARCHAR(64) NULL,
+      note TEXT NULL,
+      next_followup_at DATETIME NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX(rent_id),
+      INDEX(client_id),
+      INDEX(user_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 }
 
