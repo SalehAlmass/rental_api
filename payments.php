@@ -249,6 +249,7 @@ if ($path === "payments" && $method === "POST") {
 
       // update rent financials after insert
       recalc_rent_financials($pdo, (int)$rent_id);
+      update_rent_closing_payment_status($pdo, (int)$rent_id, $newId, $methodPay);
       audit_log($pdo, 'payment_created', 'payment', $newId, ['rent_id' => $rent_id, 'amount' => $amount, 'type' => $type]);
 
       $pdo->commit();
@@ -278,6 +279,7 @@ if ($path === "payments" && $method === "POST") {
     $pdo->beginTransaction();
     try {
       recalc_rent_financials($pdo, (int)$rent_id);
+      update_rent_closing_payment_status($pdo, (int)$rent_id, $newId, $methodPay);
       $pdo->commit();
     } catch (Throwable $e) {
       if ($pdo->inTransaction()) $pdo->rollBack();

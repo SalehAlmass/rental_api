@@ -460,3 +460,14 @@ function process_monthly_depreciation(PDO $pdo): void
     }
   }
 }
+
+function update_rent_closing_payment_status(PDO $pdo, int $rentId, int $paymentId, string $method): void {
+  $st = $pdo->prepare("SELECT status FROM rents WHERE id=? LIMIT 1");
+  $st->execute([$rentId]);
+  $status = strtolower((string)$st->fetchColumn());
+  if ($status === 'closed') {
+    $upd = $pdo->prepare("UPDATE rents SET closing_payment_status='created', closing_payment_id=?, closing_payment_method=? WHERE id=?");
+    $upd->execute([$paymentId, $method, $rentId]);
+  }
+}
+
