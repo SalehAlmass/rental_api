@@ -208,3 +208,82 @@ function require_auth(): array {
 
   return $payload;
 }
+
+function setting_get(PDO $pdo, string $key, ?string $default = null): ?string
+{
+  $st = $pdo->prepare("SELECT setting_value FROM app_settings WHERE setting_key=? LIMIT 1");
+  $st->execute([$key]);
+  $v = $st->fetchColumn();
+  return $v === false ? $default : ($v === null ? $default : (string)$v);
+}
+
+function setting_set(PDO $pdo, string $key, ?string $value): void
+{
+  $st = $pdo->prepare("INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?)
+                       ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)");
+  $st->execute([$key, $value]);
+}
+
+function default_user_permissions(?string $role = null): array
+{
+  $role = strtolower(trim((string)$role));
+  if ($role === 'admin') {
+    return [
+      'contract_hour_pricing_mode' => 'ask',
+      'contract_payment_receipt_mode' => 'ask',
+    ];
+  }
+  return [
+    'contract_hour_pricing_mode' => 'inherit',
+    'contract_payment_receipt_mode' => 'inherit',
+  ];
+}
+
+function normalize_user_permissions($raw, ?string $role = null): array
+{
+  $defaults = default_user_permissions($role);
+  if (is_string($raw) && trim($raw) !== '') {
+    $decoded = json_decode($raw, true);
+    if (is_array($decoded)) $raw = $decoded;
+  }
+  if (!is_array($raw)) $raw = [];
+
+  $hourMode = strtolower(trim((string)($raw['contract_hour_pricing_mode'] ?? $defaults['contract_hour_pricing_mode'])));
+  $receiptMode = strtolower(trim((string)($raw['contract_payment_receipt_mode'] ?? $defaults['contract_payment_receipt_mode'])));
+
+  if (!in_array($hourMode, ['inherit', 'auto', 'ask'], true)) {
+    $hourMode = $defaults['contract_hour_pricing_mode'];
+  }
+  if (!in_array($receiptMode, ['inherit', 'auto', 'ask'], true)) {
+    $receiptMode = $defaults['contract_payment_receipt_mode'];
+  }
+
+  return [
+    'contract_hour_pricing_mode' => $hourMode,
+    'contract_payment_receipt_mode' => $receiptMode,
+  ];
+}
+
+function effective_contract_closing_modes(PDO $pdo, ?array $user = null): array
+{
+  $globalHour = setting_get($pdo, 'contract.hour_pricing_mode', 'ask') ?? 'ask';
+  $globalReceipt = setting_get($pdo, 'contract.payment_receipt_mode', 'auto') ?? 'auto';
+
+  $role = strtolower(trim((string)($user['role'] ?? 'employee')));
+  $permissions = normalize_user_permissions($user['permissions_json'] ?? ($user['permissions'] ?? null), $role);
+
+  $hourMode = $permissions['contract_hour_pricing_mode'] === 'inherit'
+    ? $globalHour
+    : $permissions['contract_hour_pricing_mode'];
+  $receiptMode = $permissions['contract_payment_receipt_mode'] === 'inherit'
+    ? $globalReceipt
+    : $permissions['contract_payment_receipt_mode'];
+
+  return [
+    'hour_pricing_mode' => $hourMode,
+    'payment_receipt_mode' => $receiptMode,
+    'global_hour_pricing_mode' => $globalHour,
+    'global_payment_receipt_mode' => $globalReceipt,
+    'permissions' => $permissions,
+  ];
+}
