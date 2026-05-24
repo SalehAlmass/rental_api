@@ -125,7 +125,7 @@ function compute_hours(PDO $pdo, int $uid, string $from, string $to): float {
 // GET attendance/me?from=YYYY-MM-DD&to=YYYY-MM-DD
 if ($path === 'attendance/me' && $method === 'GET') {
   $uid = (int)($auth['sub'] ?? $auth['uid'] ?? 0);
-  if ($uid <= 0) respond(['success'=>false,'error'=>'Unauthorized'], 401);
+  if ($uid <= 0) respond(['success'=>false,'error'=>'غير مصرح'], 401);
   $from = trim((string)($_GET['from'] ?? ''));
   $to   = trim((string)($_GET['to'] ?? ''));
   if ($from === '' || $to === '') {
@@ -161,7 +161,7 @@ if ($path === 'attendance/me' && $method === 'GET') {
 // POST attendance/checkin
 if ($path === 'attendance/checkin' && $method === 'POST') {
   $uid = (int)($auth['sub'] ?? $auth['uid'] ?? 0);
-  if ($uid <= 0) respond(['success'=>false,'error'=>'Unauthorized'], 401);
+  if ($uid <= 0) respond(['success'=>false,'error'=>'غير مصرح'], 401);
   $in = json_in();
   if (!$in) $in = $_POST;
   $methodName = $in['method'] ?? 'biometric';
@@ -172,7 +172,7 @@ if ($path === 'attendance/checkin' && $method === 'POST') {
 
   $last = last_log($pdo, $uid);
   if ($last && strtolower((string)$last['type']) === 'in') {
-    respond(['success'=>false, 'error'=>'Already checked-in'], 409);
+    respond(['success'=>false, 'error'=>'مسجل الدخول بالفعل'], 409);
   }
 
   $st = $pdo->prepare("INSERT INTO attendance_logs (user_id, type, ts, method, shift, note) VALUES (?,?,?,?,?,?)");
@@ -183,7 +183,7 @@ if ($path === 'attendance/checkin' && $method === 'POST') {
 // POST attendance/checkout
 if ($path === 'attendance/checkout' && $method === 'POST') {
   $uid = (int)($auth['sub'] ?? $auth['uid'] ?? 0);
-  if ($uid <= 0) respond(['success'=>false,'error'=>'Unauthorized'], 401);
+  if ($uid <= 0) respond(['success'=>false,'error'=>'غير مصرح'], 401);
   $in = json_in();
   if (!$in) $in = $_POST;
   $methodName = $in['method'] ?? 'biometric';
@@ -193,7 +193,7 @@ if ($path === 'attendance/checkout' && $method === 'POST') {
 
   $last = last_log($pdo, $uid);
   if (!$last || strtolower((string)$last['type']) !== 'in') {
-    respond(['success'=>false, 'error'=>'Not checked-in'], 409);
+    respond(['success'=>false, 'error'=>'غير مسجل الدخول'], 409);
   }
 
   $st = $pdo->prepare("INSERT INTO attendance_logs (user_id, type, ts, method, shift, note) VALUES (?,?,?,?,?,?)");
@@ -324,7 +324,7 @@ function compute_pay(PDO $pdo, array $userRow, array $metrics): array {
 
 if ($path === 'attendance/admin' && $method === 'GET') {
   if (strtolower((string)($auth['role'] ?? '')) !== 'admin') {
-    respond(['success'=>false,'error'=>'Forbidden'], 403);
+    respond(['success'=>false,'error'=>'ممنوع'], 403);
   }
 
   $month = trim((string)($_GET['month'] ?? ''));
@@ -368,7 +368,7 @@ if ($path === 'attendance/admin' && $method === 'GET') {
 // GET attendance/summary?month=YYYY-MM  (Admin)
 if ($path === 'attendance/summary' && $method === 'GET') {
   if (strtolower((string)$auth['role']) !== 'admin') {
-    respond(['success'=>false, 'error'=>'Forbidden'], 403);
+    respond(['success'=>false, 'error'=>'ممنوع'], 403);
   }
   $month = trim((string)($_GET['month'] ?? ''));
   if ($month === '') $month = date('Y-m');
@@ -393,4 +393,4 @@ if ($path === 'attendance/summary' && $method === 'GET') {
   respond(['success'=>true, 'data'=>['month'=>$month, 'from'=>$from, 'to'=>$to, 'items'=>$out]]);
 }
 
-respond(["success"=>false, "error"=>"Not Found"], 404);
+respond(["success"=>false, "error"=>"غير موجود"], 404);

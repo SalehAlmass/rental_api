@@ -361,4 +361,4 @@ if ($path === "settings/contract-closing" && $method === "PUT") {
   }
 }
 
-respond(["error" => "Not Found"], 404);
+respond(["error" => "غير موجود"], 404);

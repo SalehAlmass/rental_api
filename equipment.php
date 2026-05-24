@@ -70,7 +70,7 @@ if ($path === "equipment" && $method === "POST") {
   $seriesCount = max(1, min(500, (int)($in['series_count'] ?? 1)));
 
   if ($data['name'] === '' || $data['daily_rate'] <= 0) {
-    respond(["error" => "Missing required fields"], 400);
+    respond(["error" => "حقول مطلوبة مفقودة"], 400);
   }
 
   $st = $pdo->prepare("INSERT INTO equipment
@@ -103,7 +103,7 @@ if ($path === "equipment" && $method === "POST") {
     $pdo->commit();
   } catch (Throwable $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();
-    respond(["error" => "Failed to create equipment", "details" => $e->getMessage()], 500);
+    respond(["error" => "فشل في إنشاء المعدة", "details" => $e->getMessage()], 500);
   }
 
   respond([
@@ -118,7 +118,7 @@ if (preg_match('#^equipment/(\d+)$#', $path, $m) && $method === "PUT") {
   $curSt = $pdo->prepare("SELECT * FROM equipment WHERE id=? AND COALESCE(is_active,1)=1 LIMIT 1");
   $curSt->execute([$id]);
   $current = $curSt->fetch(PDO::FETCH_ASSOC);
-  if (!$current) respond(["error" => "Equipment not found"], 404);
+  if (!$current) respond(["error" => "المعدة غير موجودة"], 404);
   $in = json_in();
   $data = equipment_payload($pdo, $in, $current);
 
@@ -143,10 +143,10 @@ if (preg_match('#^equipment/(\d+)$#', $path, $m) && $method === "DELETE") {
   $chk = $pdo->prepare("SELECT status FROM equipment WHERE id=?");
   $chk->execute([$id]);
   $eq = $chk->fetch(PDO::FETCH_ASSOC);
-  if (!$eq) respond(["error" => "Equipment not found"], 404);
-  if (($eq["status"] ?? '') === "rented") respond(["error" => "Cannot delete equipment (currently rented)"], 400);
+  if (!$eq) respond(["error" => "المعدة غير موجودة"], 404);
+  if (($eq["status"] ?? '') === "rented") respond(["error" => "لا يمكن حذف المعدة لأنها مؤجرة حالياً"], 400);
   $pdo->prepare("UPDATE equipment SET is_active=0 WHERE id=?")->execute([$id]);
   respond(["ok" => true]);
 }
 
-respond(["error" => "Not Found"], 404);
+respond(["error" => "غير موجود"], 404);

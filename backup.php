@@ -194,7 +194,7 @@ if ($path === "backup/list" && $method === "GET") {
 */
 if ($path === "backup/create" && $method === "POST") {
   if (!is_writable($backupDir)) {
-    respond(["error" => "Backup folder is not writable: " . $backupDir], 500);
+    respond(["error" => "مجلد النسخ الاحتياطي غير قابل للكتابة"], 500);
   }
 
   // وقت أطول للنسخ
@@ -237,7 +237,7 @@ if ($path === "backup/create" && $method === "POST") {
       ],
     ], 201);
   } catch (Throwable $e) {
-    respond(["error" => "Backup failed: " . $e->getMessage()], 500);
+    respond(["error" => "فشلت عملية النسخ الاحتياطي: " . $e->getMessage()], 500);
   }
 }
 
@@ -248,10 +248,10 @@ if ($path === "backup/create" && $method === "POST") {
 */
 if ($path === "backup/download" && $method === "GET") {
   $name = safe_name($_GET["name"] ?? "");
-  if ($name === "") respond(["error" => "name required"], 422);
+  if ($name === "") respond(["error" => "اسم الملف مطلوب"], 422);
 
   $fullpath = $backupDir . "/" . $name;
-  if (!file_exists($fullpath)) respond(["error" => "Backup not found"], 404);
+  if (!file_exists($fullpath)) respond(["error" => "النسخة الاحتياطية غير موجودة"], 404);
 
   header("Content-Type: application/sql; charset=utf-8");
   header("Content-Disposition: attachment; filename=\"$name\"");
@@ -267,7 +267,7 @@ if ($path === "backup/download" && $method === "GET") {
 */
 if ($path === "backup/upload" && $method === "POST") {
   if (!isset($_FILES['sql_file']) || $_FILES['sql_file']['error'] !== UPLOAD_ERR_OK) {
-    respond(["error" => "No valid file uploaded or file too large"], 400);
+    respond(["error" => "لم يتم رفع ملف صالح أو الملف كبير جداً"], 400);
   }
 
   $tmpName = $_FILES['sql_file']['tmp_name'];
@@ -275,7 +275,7 @@ if ($path === "backup/upload" && $method === "POST") {
   $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
 
   if ($ext !== 'sql') {
-    respond(["error" => "Only .sql files are allowed"], 400);
+    respond(["error" => "مسموح فقط بملفات .sql"], 400);
   }
 
   // Create a unique safe name
@@ -285,14 +285,14 @@ if ($path === "backup/upload" && $method === "POST") {
   if (move_uploaded_file($tmpName, $fullpath)) {
     respond([
       "success" => true,
-      "message" => "File uploaded successfully",
+      "message" => "تم رفع الملف بنجاح",
       "data" => [
         "file" => $newName,
         "name" => $newName
       ]
     ], 200);
   } else {
-    respond(["error" => "Failed to save uploaded file to $fullpath"], 500);
+    respond(["error" => "فشل حفظ الملف المرفوع في المسار المطلوب"], 500);
   }
 }
 
@@ -308,13 +308,13 @@ if ($path === "backup/restore" && $method === "POST") {
   $in = json_in();
   // ✅ accept both 'name' and 'file' (Flutter used file previously)
   $name = safe_name($in["name"] ?? ($in["file"] ?? ""));
-  if ($name === "") respond(["error" => "name required"], 422);
+  if ($name === "") respond(["error" => "اسم الملف مطلوب"], 422);
 
   $fullpath = $backupDir . "/" . $name;
-  if (!file_exists($fullpath)) respond(["error" => "Backup not found"], 404);
+  if (!file_exists($fullpath)) respond(["error" => "النسخة الاحتياطية غير موجودة"], 404);
 
   $sql = file_get_contents($fullpath);
-  if ($sql === false || trim($sql) === "") respond(["error" => "Backup file is empty"], 422);
+  if ($sql === false || trim($sql) === "") respond(["error" => "ملف النسخة الاحتياطية فارغ"], 422);
 
   try {
     // ✅ important: remove comments before splitting, otherwise statements start with comments and get skipped
@@ -335,12 +335,12 @@ if ($path === "backup/restore" && $method === "POST") {
 
     $pdo->exec("SET FOREIGN_KEY_CHECKS=1");
 
-    respond(["success" => true, "message" => "Restored successfully", "name" => $name], 200);
+    respond(["success" => true, "message" => "تمت استعادة النسخة الاحتياطية بنجاح", "name" => $name], 200);
   } catch (Throwable $e) {
     try {
       $pdo->exec("SET FOREIGN_KEY_CHECKS=1");
     } catch (Throwable $ignore) {}
-    respond(["error" => "Restore failed: " . $e->getMessage()], 500);
+    respond(["error" => "فشلت عملية الاستعادة: " . $e->getMessage()], 500);
   }
 }
 /*
@@ -360,15 +360,15 @@ if ($path === "backup/delete" && in_array($method, ["DELETE","POST"], true)) {
   }
 
   $name = safe_name($name);
-  if ($name === "") respond(["error" => "name required"], 422);
+  if ($name === "") respond(["error" => "اسم الملف مطلوب"], 422);
 
   $fullpath = $backupDir . "/" . $name;
-  if (!file_exists($fullpath)) respond(["error" => "Backup not found"], 404);
+  if (!file_exists($fullpath)) respond(["error" => "النسخة الاحتياطية غير موجودة"], 404);
 
   if (@unlink($fullpath)) {
-    respond(["success" => true, "message" => "Deleted", "name" => $name], 200);
+    respond(["success" => true, "message" => "تم الحذف بنجاح", "name" => $name], 200);
   } else {
-    respond(["error" => "Delete failed (permission?)"], 500);
+    respond(["error" => "فشل الحذف (صلاحيات؟)"], 500);
   }
 }
 
@@ -398,4 +398,4 @@ if ($path === "backup/clear" && $method === "DELETE") {
   ], 200);
 }
 
-respond(["error" => "Not Found", "debug" => ["path" => $path, "method" => $method, "get" => $_GET]], 404);
+respond(["error" => "غير موجود", "debug" => ["path" => $path, "method" => $method, "get" => $_GET]], 404);

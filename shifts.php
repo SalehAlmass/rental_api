@@ -72,12 +72,12 @@ if ($path === "shifts" && $method === "GET") {
 
   // Filter by date (shift_date)
   if ($from !== null && $from !== "") {
-    if (!is_ymd($from)) respond(["error" => "Invalid from date. Use YYYY-MM-DD"], 400);
+    if (!is_ymd($from)) respond(["error" => "تاريخ البداية غير صالح. استخدم YYYY-MM-DD"], 400);
     $conds[] = "s.shift_date >= ?";
     $params[] = $from;
   }
   if ($to !== null && $to !== "") {
-    if (!is_ymd($to)) respond(["error" => "Invalid to date. Use YYYY-MM-DD"], 400);
+    if (!is_ymd($to)) respond(["error" => "تاريخ النهاية غير صالح. استخدم YYYY-MM-DD"], 400);
     $conds[] = "s.shift_date <= ?";
     $params[] = $to;
   }

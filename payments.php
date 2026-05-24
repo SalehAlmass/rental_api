@@ -143,8 +143,8 @@ if ($path === "payments" && $method === "POST") {
   $type   = trim((string)($in["type"] ?? ""));
   $amount = (float)($in["amount"] ?? 0);
 
-  if (!in_array($type, ["in","out","depreciation"], true)) respond(["error"=>"type must be in|out|depreciation"], 400);
-  if ($amount <= 0) respond(["error"=>"amount must be > 0"], 400);
+  if (!in_array($type, ["in","out","depreciation"], true)) respond(["error"=>"نوع السند غير صالح. يجب أن يكون وارد أو صادر أو إهلاك"], 400);
+  if ($amount <= 0) respond(["error"=>"يجب أن يكون المبلغ أكبر من 0"], 400);
 
   $client_id = (isset($in["client_id"]) && $in["client_id"] !== "") ? (int)$in["client_id"] : null;
   $rent_id   = (isset($in["rent_id"])   && $in["rent_id"]   !== "") ? (int)$in["rent_id"]   : null;
@@ -152,13 +152,13 @@ if ($path === "payments" && $method === "POST") {
   // ✅ إذا rent_id موجود: لازم العقد موجود + client_id يطابقه (أو نأخذه تلقائيًا)
   if ($rent_id !== null && $rent_id > 0) {
     $rent = fetch_rent($pdo, $rent_id);
-    if (!$rent) respond(["error" => "Rent not found"], 404);
+    if (!$rent) respond(["error" => "عقد الإيجار غير موجود"], 404);
 
     if ($client_id === null || $client_id <= 0) {
       $client_id = (int)$rent["client_id"];
     } else {
       if ((int)$rent["client_id"] !== (int)$client_id) {
-        respond(["error" => "client_id does not match rent's client_id"], 409);
+        respond(["error" => "معرف العميل لا يتطابق مع معرف العميل في العقد"], 409);
       }
     }
 
@@ -181,7 +181,7 @@ if ($path === "payments" && $method === "POST") {
 
   // ✅ إذا client_id موجود: تأكد العميل موجود
   if ($client_id !== null && $client_id > 0) {
-    if (!fetch_client($pdo, $client_id)) respond(["error" => "Client not found"], 404);
+    if (!fetch_client($pdo, $client_id)) respond(["error" => "العميل غير موجود"], 404);
   }
 
   $equipment_id = (isset($in["equipment_id"]) && $in["equipment_id"] !== "") ? (int)$in["equipment_id"] : null;
@@ -214,7 +214,7 @@ if ($path === "payments" && $method === "POST") {
       $rRow = $stR->fetch();
       if (!$rRow) {
         $pdo->rollBack();
-        respond(["error" => "Rent not found"], 404);
+        respond(["error" => "عقد الإيجار غير موجود"], 404);
       }
 
       $status = strtolower((string)($rRow['status'] ?? ''));
@@ -231,12 +231,12 @@ if ($path === "payments" && $method === "POST") {
         $remaining = (float)$stR2->fetchColumn();
         if ($remaining <= 0.0001) {
           $pdo->rollBack();
-          respond(["error" => "Rent is already fully paid"], 409);
+          respond(["error" => "العقد مدفوع بالكامل بالفعل"], 409);
         }
         // do not allow overpay
         if ($amount > $remaining + 0.0001) {
           $pdo->rollBack();
-          respond(["error" => "Amount exceeds remaining"], 409);
+          respond(["error" => "المبلغ يتجاوز المبلغ المتبقي"], 409);
         }
       }
 
@@ -260,7 +260,7 @@ if ($path === "payments" && $method === "POST") {
         $existingId = $chk->fetchColumn();
         if ($existingId) respond(["id" => (int)$existingId, "idempotent" => true], 200);
       }
-      respond(["error" => "Server error", "details" => $e->getMessage()], 500);
+      respond(["error" => "خطأ في الخادم", "details" => $e->getMessage()], 500);
     }
   }
 
@@ -294,17 +294,17 @@ if (preg_match('#^payments/(\\d+)$#', $path, $m) && $method === "PUT") {
   $st = $pdo->prepare("SELECT * FROM payments WHERE id=?");
   $st->execute([$id]);
   $pay = $st->fetch();
-  if (!$pay) respond(["error" => "Payment not found"], 404);
+  if (!$pay) respond(["error" => "السند غير موجود"], 404);
 
   if ((int)$pay["is_void"] === 1) {
-    respond(["error" => "Cannot update voided payment"], 409);
+    respond(["error" => "لا يمكن تعديل سند ملغى"], 409);
   }
 
   $type = array_key_exists("type", $in) ? trim((string)$in["type"]) : (string)$pay["type"];
-  if (!in_array($type, ["in","out","depreciation"], true)) respond(["error"=>"type must be in|out|depreciation"], 400);
+  if (!in_array($type, ["in","out","depreciation"], true)) respond(["error"=>"نوع السند غير صالح. يجب أن يكون وارد أو صادر أو إهلاك"], 400);
 
   $amount = isset($in["amount"]) ? (float)$in["amount"] : (float)$pay["amount"];
-  if ($amount <= 0) respond(["error" => "amount must be > 0"], 400);
+  if ($amount <= 0) respond(["error" => "يجب أن يكون المبلغ أكبر من 0"], 400);
 
   $methodPay = isset($in["method"]) ? (string)$in["method"] : (string)$pay["method"];
   $ref   = array_key_exists("reference_no", $in) ? $in["reference_no"] : $pay["reference_no"];
@@ -325,13 +325,13 @@ if (preg_match('#^payments/(\\d+)$#', $path, $m) && $method === "PUT") {
   // ✅ إذا rent_id موجود: لازم العقد موجود + client_id يطابقه (أو نأخذه تلقائيًا)
   if ($rent_id !== null && $rent_id > 0) {
     $rent = fetch_rent($pdo, $rent_id);
-    if (!$rent) respond(["error" => "Rent not found"], 404);
+    if (!$rent) respond(["error" => "عقد الإيجار غير موجود"], 404);
 
     if ($client_id === null || $client_id <= 0) {
       $client_id = (int)$rent["client_id"];
     } else {
       if ((int)$rent["client_id"] !== (int)$client_id) {
-        respond(["error" => "client_id does not match rent's client_id"], 409);
+        respond(["error" => "معرف العميل لا يتطابق مع معرف العميل في العقد"], 409);
       }
     }
 
@@ -354,7 +354,7 @@ if (preg_match('#^payments/(\\d+)$#', $path, $m) && $method === "PUT") {
 
   // ✅ إذا client_id موجود: تأكد العميل موجود
   if ($client_id !== null && $client_id > 0) {
-    if (!fetch_client($pdo, $client_id)) respond(["error" => "Client not found"], 404);
+    if (!fetch_client($pdo, $client_id)) respond(["error" => "العميل غير موجود"], 404);
   }
 
   $upd = $pdo->prepare("UPDATE payments
@@ -374,10 +374,10 @@ if (preg_match('#^payments/(\\d+)/void$#', $path, $m) && $method === "POST") {
   $st = $pdo->prepare("SELECT * FROM payments WHERE id=?");
   $st->execute([$id]);
   $pay = $st->fetch();
-  if (!$pay) respond(["error" => "Payment not found"], 404);
+  if (!$pay) respond(["error" => "السند غير موجود"], 404);
 
   if ((int)$pay["is_void"] === 1) {
-    respond(["error" => "Payment already voided"], 409);
+    respond(["error" => "السند ملغى بالفعل"], 409);
   }
 
   $upd = $pdo->prepare("UPDATE payments
@@ -396,8 +396,8 @@ if (preg_match('#^payments/(\\d+)/void$#', $path, $m) && $method === "POST") {
 	  respond(["ok" => true]);
 	} catch (Throwable $e) {
 	  if ($pdo->inTransaction()) $pdo->rollBack();
-	  respond(["error" => "Server error", "details" => $e->getMessage()], 500);
+	  respond(["error" => "خطأ في الخادم", "details" => $e->getMessage()], 500);
 	}
 }
 
-respond(["error"=>"Not Found"], 404);
+respond(["error"=>"غير موجود"], 404);

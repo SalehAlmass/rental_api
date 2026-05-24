@@ -217,7 +217,7 @@ if ($path === 'payroll/me' && $method === 'GET') {
   $st = $pdo->prepare("SELECT id, username, role, hourly_rate, monthly_salary, salary_type FROM users WHERE id=?");
   $st->execute([$uid]);
   $u = $st->fetch();
-  if (!$u) respond(['success'=>false, 'error'=>'User not found'], 404);
+  if (!$u) respond(['success'=>false, 'error'=>'المستخدم غير موجود'], 404);
 
   $hours = compute_hours($pdo, $uid, $from, date('Y-m-d H:i:s', strtotime($to)+1));
   $amount = calc_amount($u, $hours);
@@ -238,7 +238,7 @@ if ($path === 'payroll/me' && $method === 'GET') {
 // GET payroll/summary?month=YYYY-MM (Admin)
 if ($path === 'payroll/summary' && $method === 'GET') {
   if (strtolower((string)$auth['role']) !== 'admin') {
-    respond(['success'=>false, 'error'=>'Forbidden'], 403);
+    respond(['success'=>false, 'error'=>'ممنوع'], 403);
   }
   $month = trim((string)($_GET['month'] ?? ''));
   if ($month === '') $month = date('Y-m');
@@ -272,7 +272,7 @@ if ($path === 'payroll/summary' && $method === 'GET') {
 // PUT payroll/user/{id} (Admin) - update salary settings
 if (preg_match('#^payroll/user/(\\d+)$#', $path, $m) && $method === 'PUT') {
   if (strtolower((string)$auth['role']) !== 'admin') {
-    respond(['success'=>false, 'error'=>'Forbidden'], 403);
+    respond(['success'=>false, 'error'=>'ممنوع'], 403);
   }
   $uid = (int)$m[1];
   $in = json_in();
@@ -282,7 +282,7 @@ if (preg_match('#^payroll/user/(\\d+)$#', $path, $m) && $method === 'PUT') {
   $monthly = isset($in['monthly_salary']) ? (float)$in['monthly_salary'] : null;
 
   if ($salaryType !== null && !in_array($salaryType, ['hourly','monthly'], true)) {
-    respond(['success'=>false, 'error'=>'salary_type must be hourly or monthly'], 400);
+    respond(['success'=>false, 'error'=>'يجب أن يكون نوع الراتب بالساعة أو شهرياً'], 400);
   }
 
   $st = $pdo->prepare("UPDATE users SET salary_type=COALESCE(?, salary_type), hourly_rate=COALESCE(?, hourly_rate), monthly_salary=COALESCE(?, monthly_salary) WHERE id=?");
@@ -290,4 +290,4 @@ if (preg_match('#^payroll/user/(\\d+)$#', $path, $m) && $method === 'PUT') {
   respond(['success'=>true, 'data'=>['ok'=>true]]);
 }
 
-respond(['success'=>false, 'error'=>'Not Found'], 404);
+respond(['success'=>false, 'error'=>'غير موجود'], 404);

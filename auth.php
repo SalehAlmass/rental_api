@@ -118,7 +118,7 @@ if ($path === "users" && $method === "POST") {
   $role     = trim((string)($in["role"] ?? "employee"));
 
   if ($username === "" || $password === "") {
-    respond(["error" => "Missing fields"], 400);
+    respond(["error" => "حقول مفقودة"], 400);
   }
 
   $pdo = db();
@@ -274,7 +274,7 @@ if ($path === "auth/change-password" && $method === "POST") {
   $new = trim((string)($in["new_password"] ?? ""));
 
   if ($old === "" || $new === "") {
-    respond(["error" => "Missing fields"], 400);
+    respond(["error" => "حقول مفقودة"], 400);
   }
 
   $pdo = db();
@@ -283,13 +283,13 @@ if ($path === "auth/change-password" && $method === "POST") {
   $row = $st->fetch();
 
   if (!$row || $row["password"] !== $old) {
-    respond(["error" => "Old password incorrect"], 401);
+    respond(["error" => "كلمة المرور القديمة غير صحيحة"], 401);
   }
 
   $up = $pdo->prepare("UPDATE users SET password=? WHERE id=?");
   $up->execute([$new, $userId]);
 
-  respond(["message" => "Password changed successfully"], 200);
+  respond(["message" => "تم تغيير كلمة المرور بنجاح"], 200);
 }
 
 /*
@@ -297,4 +297,4 @@ if ($path === "auth/change-password" && $method === "POST") {
 | NOT FOUND
 |--------------------------------------------------------------------------
 */
-respond(["error" => "Not Found"], 404);
+respond(["error" => "غير موجود"], 404);

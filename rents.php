@@ -632,46 +632,50 @@ if (preg_match('#^rents/(\d+)/collection-followups$#', $path, $m) && $method ===
 |--------------------------------------------------------------------------
 */
 if (preg_match('#^rents/(\d+)/collection-followups$#', $path, $m) && $method === "POST") {
-  $rentId = (int)$m[1];
-  $uid = (int)($auth['sub'] ?? 0);
-  $in = json_in();
+  try {
+    $rentId = (int)$m[1];
+    $uid = (int)($auth['sub'] ?? 0);
+    $in = json_in();
 
-  // Verify rent exists
-  $stRent = $pdo->prepare("SELECT id, client_id FROM rents WHERE id=?");
-  $stRent->execute([$rentId]);
-  $rent = $stRent->fetch(PDO::FETCH_ASSOC);
-  if (!$rent) respond(["error" => "Rent not found"], 404);
+    // Verify rent exists
+    $stRent = $pdo->prepare("SELECT id, client_id FROM rents WHERE id=?");
+    $stRent->execute([$rentId]);
+    $rent = $stRent->fetch(PDO::FETCH_ASSOC);
+    if (!$rent) respond(["error" => "العقد غير موجود"], 404);
 
-  $clientId = (int)$rent['client_id'];
-  $contactType = trim((string)($in['contact_type'] ?? 'call'));
-  $outcome = trim((string)($in['outcome'] ?? ''));
-  $note = trim((string)($in['note'] ?? ''));
-  $nextFollowupAt = !empty($in['next_followup_at']) ? (string)$in['next_followup_at'] : null;
-  $allowDup = (bool)($in['allow_duplicate_today'] ?? false);
+    $clientId = (int)$rent['client_id'];
+    $contactType = trim((string)($in['contact_type'] ?? 'call'));
+    $outcome = trim((string)($in['outcome'] ?? ''));
+    $note = trim((string)($in['note'] ?? ''));
+    $nextFollowupAt = !empty($in['next_followup_at']) ? (string)$in['next_followup_at'] : null;
+    $allowDup = (bool)($in['allow_duplicate_today'] ?? false);
 
-  // Check duplicate today (unless explicitly allowed)
-  if (!$allowDup) {
-    $today = date('Y-m-d');
-    $stDup = $pdo->prepare("SELECT id FROM collection_followups WHERE rent_id=? AND DATE(created_at)=? LIMIT 1");
-    $stDup->execute([$rentId, $today]);
-    if ($stDup->fetch()) {
-      respond(["error" => "يوجد متابعة مسجلة اليوم لهذا العقد. هل تريد إضافة أخرى؟"], 409);
+    // Check duplicate today (unless explicitly allowed)
+    if (!$allowDup) {
+      $today = date('Y-m-d');
+      $stDup = $pdo->prepare("SELECT id FROM collection_followups WHERE rent_id=? AND DATE(created_at)=? LIMIT 1");
+      $stDup->execute([$rentId, $today]);
+      if ($stDup->fetch()) {
+        respond(["error" => "يوجد متابعة مسجلة اليوم لهذا العقد. هل تريد إضافة أخرى؟"], 409);
+      }
     }
+
+    $st = $pdo->prepare("INSERT INTO collection_followups (rent_id, client_id, created_by_user_id, contact_type, outcome, note, next_followup_at)
+                         VALUES (?,?,?,?,?,?,?)");
+    $st->execute([$rentId, $clientId, $uid > 0 ? $uid : null, $contactType, $outcome ?: null, $note ?: null, $nextFollowupAt]);
+
+    $newId = (int)$pdo->lastInsertId();
+
+    audit_log($pdo, 'collection_followup_created', 'rent', $rentId, [
+      'followup_id' => $newId,
+      'contact_type' => $contactType,
+      'outcome' => $outcome,
+    ]);
+
+    respond(["data" => ["id" => $newId, "ok" => true]], 201);
+  } catch (Throwable $e) {
+    respond(["error" => "فشل في حفظ متابعة التحصيل: " . $e->getMessage()], 500);
   }
-
-  $st = $pdo->prepare("INSERT INTO collection_followups (rent_id, client_id, user_id, contact_type, outcome, note, next_followup_at)
-                       VALUES (?,?,?,?,?,?,?)");
-  $st->execute([$rentId, $clientId, $uid > 0 ? $uid : null, $contactType, $outcome ?: null, $note ?: null, $nextFollowupAt]);
-
-  $newId = (int)$pdo->lastInsertId();
-
-  audit_log($pdo, 'collection_followup_created', 'rent', $rentId, [
-    'followup_id' => $newId,
-    'contact_type' => $contactType,
-    'outcome' => $outcome,
-  ]);
-
-  respond(["data" => ["id" => $newId, "ok" => true]], 201);
 }
 
-respond(["error" => "Not Found"], 404);
+respond(["error" => "غير موجود"], 404);
