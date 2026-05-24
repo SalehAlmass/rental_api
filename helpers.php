@@ -178,6 +178,16 @@ function jwt_verify(string $token, string $secret): ?array {
   $payload = json_decode(b64url_dec($p), true);
   return is_array($payload) ? $payload : null;
 }
+function auth_user(): ?array {
+  $payload = $GLOBALS['auth_payload'] ?? null;
+  if (!$payload) return null;
+  return [
+    'id' => (int)($payload['sub'] ?? 0),
+    'username' => $payload['username'] ?? '',
+    'role' => $payload['role'] ?? '',
+  ];
+}
+
 function require_auth(): array {
   global $JWT_SECRET;
 
@@ -205,6 +215,8 @@ function require_auth(): array {
   $payload = jwt_verify(trim($m[1]), $JWT_SECRET);
   if (!$payload) respond(["error"=>"رمز غير صالح"], 401);
   if (isset($payload["exp"]) && time() > (int)$payload["exp"]) respond(["error"=>"انتهت صلاحية الرمز"], 401);
+
+  $GLOBALS['auth_payload'] = $payload;
 
   return $payload;
 }
