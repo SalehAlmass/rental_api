@@ -641,7 +641,7 @@ if (preg_match('#^rents/(\d+)/collection-followups$#', $path, $m) && $method ===
     $stRent = $pdo->prepare("SELECT id, client_id FROM rents WHERE id=?");
     $stRent->execute([$rentId]);
     $rent = $stRent->fetch(PDO::FETCH_ASSOC);
-    if (!$rent) respond(["error" => "Rent not found"], 404);
+    if (!$rent) respond(["error" => "العقد غير موجود"], 404);
 
     $clientId = (int)$rent['client_id'];
     $contactType = trim((string)($in['contact_type'] ?? 'call'));
@@ -674,8 +674,8 @@ if (preg_match('#^rents/(\d+)/collection-followups$#', $path, $m) && $method ===
 
     respond(["data" => ["id" => $newId, "ok" => true]], 201);
   } catch (Throwable $e) {
-    respond(["error" => "Failed to save collection followup: " . $e->getMessage()], 500);
+    respond(["error" => "فشل في حفظ متابعة التحصيل: " . $e->getMessage()], 500);
   }
 }
 
-respond(["error" => "Not Found"], 404);
+respond(["error" => "غير موجود"], 404);
