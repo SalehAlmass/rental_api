@@ -7,6 +7,9 @@ $auth   = require_auth();
 $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
+ensure_financials_schema($pdo);
+ensure_depreciation_schema($pdo);
+process_monthly_depreciation($pdo);
 
 date_default_timezone_set('Asia/Riyadh');
 
@@ -21,12 +24,12 @@ function is_ymd($s) {
  */
 function build_date_filter($col, $from, $to, &$conds, &$params) {
   if ($from !== null && $from !== "") {
-    if (!is_ymd($from)) respond(["error" => "Invalid from date. Use YYYY-MM-DD"], 400);
+    if (!is_ymd($from)) respond(["error" => "تاريخ البداية غير صالح. استخدم YYYY-MM-DD"], 400);
     $conds[]  = "$col >= ?";
     $params[] = $from . " 00:00:00";
   }
   if ($to !== null && $to !== "") {
-    if (!is_ymd($to)) respond(["error" => "Invalid to date. Use YYYY-MM-DD"], 400);
+    if (!is_ymd($to)) respond(["error" => "تاريخ النهاية غير صالح. استخدم YYYY-MM-DD"], 400);
     $conds[]  = "$col <= ?";
     $params[] = $to . " 23:59:59";
   }
@@ -160,11 +163,30 @@ if ($path === "reports/equipment-profit" && $method === "GET") {
     $costMap[(int)$c['equipment_id']] = (float)$c['cost'];
   }
 
+  $condsD = ["equipment_id IS NOT NULL"];
+  $paramsD = [];
+  build_date_filter("created_at", $from, $to, $condsD, $paramsD);
+  $whereD = count($condsD) ? ("WHERE " . implode(" AND ", $condsD)) : "";
+  $depSql = "SELECT equipment_id, IFNULL(SUM(accounting_amount),0) AS accounting_dep, IFNULL(SUM(operational_amount),0) AS operational_dep
+             FROM equipment_depreciation_entries $whereD GROUP BY equipment_id";
+  $depSt = $pdo->prepare($depSql);
+  $depSt->execute($paramsD);
+  $depRows = $depSt->fetchAll(PDO::FETCH_ASSOC);
+  $depMap = [];
+  foreach ($depRows as $d) {
+    $depMap[(int)$d['equipment_id']] = [
+      'accounting' => (float)$d['accounting_dep'],
+      'operational' => (float)$d['operational_dep'],
+    ];
+  }
+
   $out = [];
   foreach ($rows as $r) {
     $eid = (int)$r['equipment_id'];
     $profit = (float)$r['profit'];
     $cost = (float)($costMap[$eid] ?? 0);
+    $accDep = (float)(($depMap[$eid]['accounting'] ?? 0));
+    $opDep = (float)(($depMap[$eid]['operational'] ?? 0));
     $out[] = [
       "equipment_id" => $eid,
       "name" => $r['name'],
@@ -172,7 +194,10 @@ if ($path === "reports/equipment-profit" && $method === "GET") {
       "serial_no" => $r['serial_no'],
       "profit" => $profit,
       "cost" => $cost,
-      "net" => $profit - $cost,
+      "accounting_depreciation" => $accDep,
+      "operational_depreciation" => $opDep,
+      "net" => $profit - $cost - $accDep,
+      "operational_net" => $profit - $cost - $opDep,
     ];
   }
 
@@ -295,7 +320,7 @@ if ($path === "reports/revenue" && $method === "GET") {
 
   $group = $_GET['group'] ?? 'day';
   if (!in_array($group, ['day','month','year'], true)) {
-    respond(["error" => "Invalid group. Use day|month|year"], 400);
+    respond(["error" => "مجموعة غير صالحة. استخدم day|month|year"], 400);
   }
 
   $from = $_GET['from'] ?? null;
@@ -477,7 +502,7 @@ if ($path === "reports/payments.csv" && $method === "GET") {
 // ------------------------------------------------------------
 if ($path === 'reports/attendance' && $method === 'GET') {
   if (strtolower((string)($auth['role'] ?? '')) !== 'admin') {
-    respond(['success'=>false, 'error'=>'Forbidden'], 403);
+    respond(['success'=>false, 'error'=>'ممنوع'], 403);
   }
 
   // Ensure tables exist (safe)
@@ -569,4 +594,4 @@ if ($path === 'reports/attendance' && $method === 'GET') {
   ]]);
 }
 
-respond(["error" => "Not Found"], 404);
+respond(["error" => "غير موجود"], 404);

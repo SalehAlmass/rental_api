@@ -1,12 +1,7 @@
 <?php
+$_SERVER['REQUEST_METHOD'] = 'GET';
 require 'config.php';
 require 'helpers.php';
 $pdo = db();
-echo "TABLES:\n";
-print_r($pdo->query('SHOW TABLES')->fetchAll(PDO::FETCH_COLUMN));
-echo "\nFOLLOWUPS SCHEMA:\n";
-try {
-    print_r($pdo->query('DESCRIBE collection_followups')->fetchAll(PDO::FETCH_ASSOC));
-} catch (Throwable $e) {
-    echo "ERROR: " . $e->getMessage() . "\n";
-}
+$st = $pdo->query('SELECT * FROM audit_logs ORDER BY id DESC LIMIT 5');
+print_r($st->fetchAll(PDO::FETCH_ASSOC));

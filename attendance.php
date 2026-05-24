@@ -19,6 +19,7 @@ function ensure_attendance_schema(PDO $pdo): void {
     type ENUM('in','out') NOT NULL,
     ts DATETIME NOT NULL,
     method VARCHAR(20) NULL,
+    shift ENUM('morning','evening') NULL,
     note TEXT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_user_ts (user_id, ts)
@@ -34,6 +35,9 @@ function ensure_attendance_schema(PDO $pdo): void {
   try {
     $pdo->exec("ALTER TABLE users ADD COLUMN salary_type ENUM('hourly','monthly') NULL");
   } catch (Throwable $e) {}
+  try {
+    $pdo->exec("ALTER TABLE attendance_logs ADD COLUMN shift ENUM('morning','evening') NULL AFTER method");
+  } catch (Throwable $e) {}
 }
 
 ensure_attendance_schema($pdo);
@@ -43,9 +47,12 @@ ensure_attendance_schema($pdo);
 // -----------------------------------------------------------------------------
 // Friday is weekly holiday (Saudi)
 const HR_WEEKLY_HOLIDAY_DOW = 5; // 0=Sun ... 5=Fri
-const HR_EXPECTED_IN = '08:00:00';
+const HR_MORNING_START = '06:00:00';
+const HR_MORNING_END   = '12:00:00';
+const HR_EVENING_START = '16:00:00';
+const HR_EVENING_END   = '21:00:00';
 const HR_GRACE_MINUTES = 15; // lateness grace
-const HR_WORKDAY_HOURS = 8;
+const HR_WORKDAY_HOURS = 11;
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -65,8 +72,21 @@ function last_log(PDO $pdo, int $uid): ?array {
   return $row ?: null;
 }
 
+function _shift_bounds_for_ts(int $ts, ?string $forcedShift = null): array {
+  $day = date('Y-m-d', $ts);
+  $shift = in_array($forcedShift, ['morning', 'evening'], true) ? $forcedShift : null;
+  if ($shift === null) {
+    $midday = strtotime($day . ' 12:00:00');
+    $shift = $ts < $midday ? 'morning' : 'evening';
+  }
+  if ($shift === 'evening') {
+    return [strtotime($day . ' ' . HR_EVENING_START), strtotime($day . ' ' . HR_EVENING_END), 'evening'];
+  }
+  return [strtotime($day . ' ' . HR_MORNING_START), strtotime($day . ' ' . HR_MORNING_END), 'morning'];
+}
+
 function compute_hours(PDO $pdo, int $uid, string $from, string $to): float {
-  $st = $pdo->prepare("SELECT type, ts FROM attendance_logs
+  $st = $pdo->prepare("SELECT type, ts, shift FROM attendance_logs
                        WHERE user_id=? AND ts>=? AND ts<?
                        ORDER BY ts ASC, id ASC");
   $st->execute([$uid, $from, $to]);
@@ -74,20 +94,27 @@ function compute_hours(PDO $pdo, int $uid, string $from, string $to): float {
 
   $totalSec = 0;
   $openIn = null;
+  $openShift = null;
   foreach ($rows as $r) {
     $t = strtolower((string)$r['type']);
     $ts = strtotime((string)$r['ts']);
     if (!$ts) continue;
     if ($t === 'in') {
       $openIn = $ts;
+      $openShift = in_array(($r['shift'] ?? ''), ['morning','evening'], true) ? $r['shift'] : null;
     } elseif ($t === 'out') {
       if ($openIn !== null && $ts > $openIn) {
-        $totalSec += ($ts - $openIn);
+        [$shiftStart, $shiftEnd] = _shift_bounds_for_ts($openIn, $openShift);
+        $startClamped = max($openIn, $shiftStart);
+        $endClamped = min($ts, $shiftEnd);
+        if ($endClamped > $startClamped) {
+          $totalSec += ($endClamped - $startClamped);
+        }
       }
       $openIn = null;
+      $openShift = null;
     }
   }
-  // لا نحتسب جلسة مفتوحة بدون خروج
   return round($totalSec / 3600, 2);
 }
 
@@ -98,7 +125,7 @@ function compute_hours(PDO $pdo, int $uid, string $from, string $to): float {
 // GET attendance/me?from=YYYY-MM-DD&to=YYYY-MM-DD
 if ($path === 'attendance/me' && $method === 'GET') {
   $uid = (int)($auth['sub'] ?? $auth['uid'] ?? 0);
-  if ($uid <= 0) respond(['success'=>false,'error'=>'Unauthorized'], 401);
+  if ($uid <= 0) respond(['success'=>false,'error'=>'غير مصرح'], 401);
   $from = trim((string)($_GET['from'] ?? ''));
   $to   = trim((string)($_GET['to'] ?? ''));
   if ($from === '' || $to === '') {
@@ -134,40 +161,44 @@ if ($path === 'attendance/me' && $method === 'GET') {
 // POST attendance/checkin
 if ($path === 'attendance/checkin' && $method === 'POST') {
   $uid = (int)($auth['sub'] ?? $auth['uid'] ?? 0);
-  if ($uid <= 0) respond(['success'=>false,'error'=>'Unauthorized'], 401);
+  if ($uid <= 0) respond(['success'=>false,'error'=>'غير مصرح'], 401);
   $in = json_in();
   if (!$in) $in = $_POST;
   $methodName = $in['method'] ?? 'biometric';
   $note = $in['note'] ?? null;
   $ts = isset($in['ts']) ? to_dt((string)$in['ts']) : date('Y-m-d H:i:s');
+  $shift = in_array(($in['shift'] ?? ''), ['morning','evening'], true) ? $in['shift'] : null;
+  if ($shift === null) { [, , $shift] = _shift_bounds_for_ts(strtotime($ts)); }
 
   $last = last_log($pdo, $uid);
   if ($last && strtolower((string)$last['type']) === 'in') {
-    respond(['success'=>false, 'error'=>'Already checked-in'], 409);
+    respond(['success'=>false, 'error'=>'مسجل الدخول بالفعل'], 409);
   }
 
-  $st = $pdo->prepare("INSERT INTO attendance_logs (user_id, type, ts, method, note) VALUES (?,?,?,?,?)");
-  $st->execute([$uid, 'in', $ts, $methodName, $note]);
+  $st = $pdo->prepare("INSERT INTO attendance_logs (user_id, type, ts, method, shift, note) VALUES (?,?,?,?,?,?)");
+  $st->execute([$uid, 'in', $ts, $methodName, $shift, $note]);
   respond(['success'=>true, 'data'=>['id'=>(int)$pdo->lastInsertId(), 'ts'=>$ts]]);
 }
 
 // POST attendance/checkout
 if ($path === 'attendance/checkout' && $method === 'POST') {
   $uid = (int)($auth['sub'] ?? $auth['uid'] ?? 0);
-  if ($uid <= 0) respond(['success'=>false,'error'=>'Unauthorized'], 401);
+  if ($uid <= 0) respond(['success'=>false,'error'=>'غير مصرح'], 401);
   $in = json_in();
   if (!$in) $in = $_POST;
   $methodName = $in['method'] ?? 'biometric';
   $note = $in['note'] ?? null;
+  $shift = in_array(($in['shift'] ?? ''), ['morning','evening'], true) ? $in['shift'] : null;
   $ts = isset($in['ts']) ? to_dt((string)$in['ts']) : date('Y-m-d H:i:s');
 
   $last = last_log($pdo, $uid);
   if (!$last || strtolower((string)$last['type']) !== 'in') {
-    respond(['success'=>false, 'error'=>'Not checked-in'], 409);
+    respond(['success'=>false, 'error'=>'غير مسجل الدخول'], 409);
   }
 
-  $st = $pdo->prepare("INSERT INTO attendance_logs (user_id, type, ts, method, note) VALUES (?,?,?,?,?)");
-  $st->execute([$uid, 'out', $ts, $methodName, $note]);
+  $st = $pdo->prepare("INSERT INTO attendance_logs (user_id, type, ts, method, shift, note) VALUES (?,?,?,?,?,?)");
+  if ($shift === null && $last && in_array(($last["shift"] ?? ""), ["morning","evening"], true)) $shift = $last["shift"];
+  $st->execute([$uid, 'out', $ts, $methodName, $shift, $note]);
   respond(['success'=>true, 'data'=>['id'=>(int)$pdo->lastInsertId(), 'ts'=>$ts]]);
 }
 
@@ -189,25 +220,27 @@ function _is_workday(int $ts): bool {
   return $dow !== HR_WEEKLY_HOLIDAY_DOW;
 }
 
-function _expected_in_ts(int $dayTs): int {
-  return strtotime(date('Y-m-d', $dayTs) . ' ' . HR_EXPECTED_IN);
+function _expected_in_ts(int $dayTs, string $shift): int {
+  $day = date('Y-m-d', $dayTs);
+  return strtotime($day . ' ' . ($shift === 'evening' ? HR_EVENING_START : HR_MORNING_START));
 }
 
 function compute_daily_metrics(PDO $pdo, int $uid, string $from, string $to): array {
   // Fetch logs for the user
-  $st = $pdo->prepare("SELECT type, ts FROM attendance_logs WHERE user_id=? AND ts>=? AND ts<=? ORDER BY ts ASC, id ASC");
+  $st = $pdo->prepare("SELECT type, ts, shift FROM attendance_logs WHERE user_id=? AND ts>=? AND ts<=? ORDER BY ts ASC, id ASC");
   $st->execute([$uid, $from, $to]);
   $rows = $st->fetchAll();
 
-  // Group by date for first check-in per day
-  $firstInByDay = []; // Y-m-d => ts
+  // Group by date for first valid check-in per day and detect shift
+  $firstInByDay = []; // Y-m-d => ['ts'=>..., 'shift'=>...]
   foreach ($rows as $r) {
     if (strtolower((string)$r['type']) !== 'in') continue;
     $ts = strtotime((string)$r['ts']);
     if (!$ts) continue;
     $day = date('Y-m-d', $ts);
-    if (!isset($firstInByDay[$day]) || $ts < $firstInByDay[$day]) {
-      $firstInByDay[$day] = $ts;
+    [, , $shift] = _shift_bounds_for_ts($ts, $r['shift'] ?? null);
+    if (!isset($firstInByDay[$day]) || $ts < $firstInByDay[$day]['ts']) {
+      $firstInByDay[$day] = ['ts' => $ts, 'shift' => $shift];
     }
   }
 
@@ -229,8 +262,10 @@ function compute_daily_metrics(PDO $pdo, int $uid, string $from, string $to): ar
     }
     $presentDays++;
 
-    $expected = _expected_in_ts($t) + (HR_GRACE_MINUTES * 60);
-    $actual = $firstInByDay[$day];
+    $actualInfo = $firstInByDay[$day];
+    $actual = (int)$actualInfo['ts'];
+    $shift = (string)$actualInfo['shift'];
+    $expected = _expected_in_ts($t, $shift) + (HR_GRACE_MINUTES * 60);
     if ($actual > $expected) {
       $lateMinutes += (int)floor(($actual - $expected) / 60);
     }
@@ -289,7 +324,7 @@ function compute_pay(PDO $pdo, array $userRow, array $metrics): array {
 
 if ($path === 'attendance/admin' && $method === 'GET') {
   if (strtolower((string)($auth['role'] ?? '')) !== 'admin') {
-    respond(['success'=>false,'error'=>'Forbidden'], 403);
+    respond(['success'=>false,'error'=>'ممنوع'], 403);
   }
 
   $month = trim((string)($_GET['month'] ?? ''));
@@ -333,7 +368,7 @@ if ($path === 'attendance/admin' && $method === 'GET') {
 // GET attendance/summary?month=YYYY-MM  (Admin)
 if ($path === 'attendance/summary' && $method === 'GET') {
   if (strtolower((string)$auth['role']) !== 'admin') {
-    respond(['success'=>false, 'error'=>'Forbidden'], 403);
+    respond(['success'=>false, 'error'=>'ممنوع'], 403);
   }
   $month = trim((string)($_GET['month'] ?? ''));
   if ($month === '') $month = date('Y-m');
@@ -358,4 +393,4 @@ if ($path === 'attendance/summary' && $method === 'GET') {
   respond(['success'=>true, 'data'=>['month'=>$month, 'from'=>$from, 'to'=>$to, 'items'=>$out]]);
 }
 
-respond(["success"=>false, "error"=>"Not Found"], 404);
+respond(["success"=>false, "error"=>"غير موجود"], 404);

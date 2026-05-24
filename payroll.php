@@ -35,17 +35,28 @@ ensure_attendance_schema($pdo);
 // HR rules (Friday holiday)
 // -----------------------------------------------------------------------------
 const HR_WEEKLY_HOLIDAY_DOW = 5; // 0=Sun..6=Sat (5=Fri)
-const HR_EXPECTED_IN = '08:00:00';
+const HR_MORNING_START = '06:00:00';
+const HR_MORNING_END   = '12:00:00';
+const HR_EVENING_START = '16:00:00';
+const HR_EVENING_END   = '21:00:00';
 const HR_GRACE_MINUTES = 15;
-const HR_WORKDAY_HOURS = 8;
+const HR_WORKDAY_HOURS = 11;
+
+function _shift_bounds_for_ts(int $ts): array {
+  $day = date('Y-m-d', $ts);
+  $midday = strtotime($day . ' 12:00:00');
+  if ($ts < $midday) return [strtotime($day . ' ' . HR_MORNING_START), strtotime($day . ' ' . HR_MORNING_END), 'morning'];
+  return [strtotime($day . ' ' . HR_EVENING_START), strtotime($day . ' ' . HR_EVENING_END), 'evening'];
+}
 
 function _is_workday(int $ts): bool {
   $dow = (int)date('w', $ts);
   return $dow !== HR_WEEKLY_HOLIDAY_DOW;
 }
 
-function _expected_in_ts(int $dayTs): int {
-  return strtotime(date('Y-m-d', $dayTs) . ' ' . HR_EXPECTED_IN);
+function _expected_in_ts(int $dayTs, string $shift): int {
+  $day = date('Y-m-d', $dayTs);
+  return strtotime($day . ' ' . ($shift === 'evening' ? HR_EVENING_START : HR_MORNING_START));
 }
 
 // Ensure schema exists (same as attendance.php but without routes)
@@ -81,7 +92,10 @@ function compute_hours(PDO $pdo, int $uid, string $from, string $to): float {
       $openIn = $ts;
     } elseif ($t === 'out') {
       if ($openIn !== null && $ts > $openIn) {
-        $totalSec += ($ts - $openIn);
+        [$shiftStart, $shiftEnd] = _shift_bounds_for_ts($openIn);
+        $startClamped = max($openIn, $shiftStart);
+        $endClamped = min($ts, $shiftEnd);
+        if ($endClamped > $startClamped) $totalSec += ($endClamped - $startClamped);
       }
       $openIn = null;
     }
@@ -103,7 +117,8 @@ function compute_daily_metrics(PDO $pdo, int $uid, string $from, string $to): ar
     $ts = strtotime((string)$r['ts']);
     if (!$ts) continue;
     $day = date('Y-m-d', $ts);
-    if (!isset($firstInByDay[$day]) || $ts < $firstInByDay[$day]) $firstInByDay[$day] = $ts;
+    [, , $shift] = _shift_bounds_for_ts($ts);
+    if (!isset($firstInByDay[$day]) || $ts < $firstInByDay[$day]['ts']) $firstInByDay[$day] = ['ts'=>$ts, 'shift'=>$shift];
   }
 
   $presentDays = 0;
@@ -122,8 +137,10 @@ function compute_daily_metrics(PDO $pdo, int $uid, string $from, string $to): ar
       continue;
     }
     $presentDays++;
-    $expected = _expected_in_ts($t) + (HR_GRACE_MINUTES * 60);
-    $actual = $firstInByDay[$day];
+    $actualInfo = $firstInByDay[$day];
+    $actual = (int)$actualInfo['ts'];
+    $shift = (string)$actualInfo['shift'];
+    $expected = _expected_in_ts($t, $shift) + (HR_GRACE_MINUTES * 60);
     if ($actual > $expected) $lateMinutes += (int)floor(($actual - $expected) / 60);
   }
 
@@ -200,7 +217,7 @@ if ($path === 'payroll/me' && $method === 'GET') {
   $st = $pdo->prepare("SELECT id, username, role, hourly_rate, monthly_salary, salary_type FROM users WHERE id=?");
   $st->execute([$uid]);
   $u = $st->fetch();
-  if (!$u) respond(['success'=>false, 'error'=>'User not found'], 404);
+  if (!$u) respond(['success'=>false, 'error'=>'المستخدم غير موجود'], 404);
 
   $hours = compute_hours($pdo, $uid, $from, date('Y-m-d H:i:s', strtotime($to)+1));
   $amount = calc_amount($u, $hours);
@@ -221,7 +238,7 @@ if ($path === 'payroll/me' && $method === 'GET') {
 // GET payroll/summary?month=YYYY-MM (Admin)
 if ($path === 'payroll/summary' && $method === 'GET') {
   if (strtolower((string)$auth['role']) !== 'admin') {
-    respond(['success'=>false, 'error'=>'Forbidden'], 403);
+    respond(['success'=>false, 'error'=>'ممنوع'], 403);
   }
   $month = trim((string)($_GET['month'] ?? ''));
   if ($month === '') $month = date('Y-m');
@@ -255,7 +272,7 @@ if ($path === 'payroll/summary' && $method === 'GET') {
 // PUT payroll/user/{id} (Admin) - update salary settings
 if (preg_match('#^payroll/user/(\\d+)$#', $path, $m) && $method === 'PUT') {
   if (strtolower((string)$auth['role']) !== 'admin') {
-    respond(['success'=>false, 'error'=>'Forbidden'], 403);
+    respond(['success'=>false, 'error'=>'ممنوع'], 403);
   }
   $uid = (int)$m[1];
   $in = json_in();
@@ -265,7 +282,7 @@ if (preg_match('#^payroll/user/(\\d+)$#', $path, $m) && $method === 'PUT') {
   $monthly = isset($in['monthly_salary']) ? (float)$in['monthly_salary'] : null;
 
   if ($salaryType !== null && !in_array($salaryType, ['hourly','monthly'], true)) {
-    respond(['success'=>false, 'error'=>'salary_type must be hourly or monthly'], 400);
+    respond(['success'=>false, 'error'=>'يجب أن يكون نوع الراتب بالساعة أو شهرياً'], 400);
   }
 
   $st = $pdo->prepare("UPDATE users SET salary_type=COALESCE(?, salary_type), hourly_rate=COALESCE(?, hourly_rate), monthly_salary=COALESCE(?, monthly_salary) WHERE id=?");
@@ -273,4 +290,4 @@ if (preg_match('#^payroll/user/(\\d+)$#', $path, $m) && $method === 'PUT') {
   respond(['success'=>true, 'data'=>['ok'=>true]]);
 }
 
-respond(['success'=>false, 'error'=>'Not Found'], 404);
+respond(['success'=>false, 'error'=>'غير موجود'], 404);
