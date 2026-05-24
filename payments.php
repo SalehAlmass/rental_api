@@ -118,11 +118,13 @@ if ($path === "payments" && $method === "GET") {
   $sql = "SELECT p.*,
                  c.name AS client_name,
                  r.id   AS rent_no,
-                 eq.name AS equipment_name
+                 eq.name AS equipment_name,
+                 u.username AS username
           FROM payments p
           LEFT JOIN clients c ON p.client_id = c.id
           LEFT JOIN rents   r ON p.rent_id = r.id
           LEFT JOIN equipment eq ON p.equipment_id = eq.id
+          LEFT JOIN users   u ON p.user_id = u.id
           $where
           ORDER BY p.id DESC";
 
