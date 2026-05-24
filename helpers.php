@@ -129,6 +129,32 @@ function ensure_financials_schema(PDO $pdo): void {
       INDEX(client_id),
       INDEX(created_by_user_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+  // Run database indexing checks to optimize queries and ensure concurrency stability
+  ensure_performance_indexes($pdo);
+}
+
+function ensure_performance_indexes(PDO $pdo): void {
+  // 1. rents indexes
+  ensure_index($pdo, 'rents', 'idx_rents_client_id', "CREATE INDEX idx_rents_client_id ON rents (client_id)");
+  ensure_index($pdo, 'rents', 'idx_rents_status', "CREATE INDEX idx_rents_status ON rents (status)");
+  ensure_index($pdo, 'rents', 'idx_rents_created_at', "CREATE INDEX idx_rents_created_at ON rents (created_at)");
+
+  // 2. payments indexes
+  ensure_index($pdo, 'payments', 'idx_payments_client_id', "CREATE INDEX idx_payments_client_id ON payments (client_id)");
+  ensure_index($pdo, 'payments', 'idx_payments_rent_id', "CREATE INDEX idx_payments_rent_id ON payments (rent_id)");
+  ensure_index($pdo, 'payments', 'idx_payments_user_id', "CREATE INDEX idx_payments_user_id ON payments (user_id)");
+  ensure_index($pdo, 'payments', 'idx_payments_created_at', "CREATE INDEX idx_payments_created_at ON payments (created_at)");
+
+  // 3. audit_logs indexes
+  ensure_index($pdo, 'audit_logs', 'idx_audit_logs_user_id', "CREATE INDEX idx_audit_logs_user_id ON audit_logs (user_id)");
+  ensure_index($pdo, 'audit_logs', 'idx_audit_logs_created_at', "CREATE INDEX idx_audit_logs_created_at ON audit_logs (created_at)");
+  ensure_index($pdo, 'audit_logs', 'idx_audit_logs_entity_id', "CREATE INDEX idx_audit_logs_entity_id ON audit_logs (entity, entity_id)");
+
+  // 4. clients indexes
+  ensure_index($pdo, 'clients', 'idx_clients_phone', "CREATE INDEX idx_clients_phone ON clients (phone)");
+  ensure_index($pdo, 'clients', 'idx_clients_national_id', "CREATE INDEX idx_clients_national_id ON clients (national_id)");
+  ensure_index($pdo, 'clients', 'idx_clients_name', "CREATE INDEX idx_clients_name ON clients (name)");
 }
 
 function audit_log(PDO $pdo, string $action, ?string $entity = null, ?int $entityId = null, array $meta = []): void {
