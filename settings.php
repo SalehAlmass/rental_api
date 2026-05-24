@@ -193,6 +193,133 @@ if ($path === "settings/admin-alerts" && $method === "GET") {
 
 /*
 |--------------------------------------------------------------------------
+| GET settings/team-monitoring
+| Returns team performance metrics
+|--------------------------------------------------------------------------
+*/
+if ($path === "settings/team-monitoring" && $method === "GET") {
+  $days = max(1, min(90, (int)($_GET['days'] ?? 14)));
+  $since = date('Y-m-d 00:00:00', strtotime("-{$days} days"));
+
+  $usersData = [];
+  $summary = [
+    'active_users' => 0,
+    'total_collections' => 0,
+    'total_followups' => 0,
+    'total_issues' => 0,
+  ];
+
+  try {
+    $stUsers = $pdo->query("SELECT id, username FROM users WHERE is_active = 1");
+    $usersList = $stUsers->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($usersList as $u) {
+      $uid = (int)$u['id'];
+      
+      // collections
+      $stColl = $pdo->prepare("SELECT SUM(amount) FROM payments WHERE user_id=? AND type='in' AND (is_void=0 OR is_void IS NULL) AND created_at >= ?");
+      $stColl->execute([$uid, $since]);
+      $collection_total = (float)$stColl->fetchColumn();
+      
+      // followups
+      $stFup = $pdo->prepare("SELECT COUNT(*) FROM collection_followups WHERE created_by_user_id=? AND created_at >= ?");
+      $stFup->execute([$uid, $since]);
+      $followups = (int)$stFup->fetchColumn();
+
+      // closed rents
+      $stClosed = $pdo->prepare("SELECT COUNT(*) FROM rents WHERE closed_by_user_id=? AND status='closed' AND closed_at >= ?");
+      $stClosed->execute([$uid, $since]);
+      $closed_rents = (int)$stClosed->fetchColumn();
+
+      // manual pricing
+      $stManual = $pdo->prepare("SELECT COUNT(*) FROM rents WHERE closed_by_user_id=? AND status='closed' AND pricing_rule_applied=0 AND closed_at >= ?");
+      $stManual->execute([$uid, $since]);
+      $manual_pricing_count = (int)$stManual->fetchColumn();
+      
+      // voided payments
+      $stVoid = $pdo->prepare("SELECT COUNT(*) FROM audit_logs WHERE user_id=? AND action LIKE '%void%' AND created_at >= ?");
+      $stVoid->execute([$uid, $since]);
+      $voided_payments = (int)$stVoid->fetchColumn();
+
+      // shift closings
+      $stShift = $pdo->prepare("SELECT COUNT(*) FROM shift_closings WHERE user_id=? AND created_at >= ?");
+      $stShift->execute([$uid, $since]);
+      $shift_closings = (int)$stShift->fetchColumn();
+
+      // shift differences
+      $stShiftDiff = $pdo->prepare("SELECT COUNT(*) FROM shift_closings WHERE user_id=? AND difference != 0 AND created_at >= ?");
+      $stShiftDiff->execute([$uid, $since]);
+      $shift_differences = (int)$stShiftDiff->fetchColumn();
+
+      // receipt skipped
+      $stSkip = $pdo->prepare("
+        SELECT COUNT(*) FROM rents r 
+        WHERE r.closed_by_user_id=? AND r.status='closed' AND r.closed_at >= ? AND r.total_amount > 0 
+          AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.rent_id=r.id AND p.type='in' AND (p.is_void=0 OR p.is_void IS NULL))
+      ");
+      $stSkip->execute([$uid, $since]);
+      $receipt_skipped_count = (int)$stSkip->fetchColumn();
+
+      // Last activity
+      $stAct = $pdo->prepare("SELECT MAX(created_at) FROM audit_logs WHERE user_id=?");
+      $stAct->execute([$uid]);
+      $last_activity_at = $stAct->fetchColumn();
+
+      $issue_count = $voided_payments + $shift_differences + $receipt_skipped_count;
+      
+      $score = 80;
+      if ($closed_rents > 0 || $collection_total > 0 || $followups > 0) {
+          $score += min(20, ($collection_total / 1000) * 2);
+          $score -= ($issue_count * 5);
+      } else {
+          $score = 50;
+      }
+      $score = max(0, min(100, $score));
+
+      $usersData[] = [
+        'id' => $uid,
+        'username' => $u['username'],
+        'collection_total' => $collection_total,
+        'followups' => $followups,
+        'closed_rents' => $closed_rents,
+        'manual_pricing_count' => $manual_pricing_count,
+        'voided_payments' => $voided_payments,
+        'shift_closings' => $shift_closings,
+        'shift_differences' => $shift_differences,
+        'receipt_skipped_count' => $receipt_skipped_count,
+        'last_activity_at' => $last_activity_at,
+        'issue_count' => $issue_count,
+        'score' => $score,
+      ];
+
+      $summary['total_collections'] += $collection_total;
+      $summary['total_followups'] += $followups;
+      $summary['total_issues'] += $issue_count;
+    }
+
+    $summary['active_users'] = count($usersData);
+
+    $sort = $_GET['sort'] ?? 'score';
+    usort($usersData, function($a, $b) use ($sort) {
+      if ($sort === 'collections') return $b['collection_total'] <=> $a['collection_total'];
+      if ($sort === 'followups') return $b['followups'] <=> $a['followups'];
+      if ($sort === 'issues') return $b['issue_count'] <=> $a['issue_count'];
+      return $b['score'] <=> $a['score'];
+    });
+
+  } catch (Throwable $e) {}
+
+  respond([
+    "success" => true,
+    "data" => [
+      "summary" => $summary,
+      "users" => $usersData
+    ]
+  ]);
+}
+
+/*
+|--------------------------------------------------------------------------
 | GET settings/contract-closing
 | Returns contract closing policy settings
 |--------------------------------------------------------------------------
@@ -234,4 +361,4 @@ if ($path === "settings/contract-closing" && $method === "PUT") {
   }
 }
 
-respond(["error" => "غير موجود"], 404);
+respond(["error" => "Not Found"], 404);
