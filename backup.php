@@ -212,6 +212,18 @@ if ($path === "backup/create" && $method === "POST") {
   try {
     $sql = dump_database($pdo, $type);
     file_put_contents($fullpath, $sql);
+
+    // ✅ Auto-prune: keep only the latest 30 backups
+    $allBackups = glob($backupDir . "/backup_*.sql") ?: [];
+    usort($allBackups, function($a, $b) { return filemtime($b) - filemtime($a); });
+    $maxKeep = 30;
+    if (count($allBackups) > $maxKeep) {
+      $toDelete = array_slice($allBackups, $maxKeep);
+      foreach ($toDelete as $old) {
+        @unlink($old);
+      }
+    }
+
     respond([
       "success" => true,
       "data" => [
@@ -249,6 +261,43 @@ if ($path === "backup/download" && $method === "GET") {
 
 /*
 |-----------------------------------------------------------
+| POST backup/upload
+| body: multipart/form-data with file 'sql_file'
+|-----------------------------------------------------------
+*/
+if ($path === "backup/upload" && $method === "POST") {
+  if (!isset($_FILES['sql_file']) || $_FILES['sql_file']['error'] !== UPLOAD_ERR_OK) {
+    respond(["error" => "No valid file uploaded or file too large"], 400);
+  }
+
+  $tmpName = $_FILES['sql_file']['tmp_name'];
+  $originalName = $_FILES['sql_file']['name'];
+  $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+
+  if ($ext !== 'sql') {
+    respond(["error" => "Only .sql files are allowed"], 400);
+  }
+
+  // Create a unique safe name
+  $newName = "uploaded_" . time() . "_" . safe_name($originalName);
+  $fullpath = $backupDir . "/" . $newName;
+
+  if (move_uploaded_file($tmpName, $fullpath)) {
+    respond([
+      "success" => true,
+      "message" => "File uploaded successfully",
+      "data" => [
+        "file" => $newName,
+        "name" => $newName
+      ]
+    ], 200);
+  } else {
+    respond(["error" => "Failed to save uploaded file to $fullpath"], 500);
+  }
+}
+
+/*
+|-----------------------------------------------------------
 | POST backup/restore
 | body: { name: "backup_xxx.sql" }
 |-----------------------------------------------------------
@@ -272,21 +321,25 @@ if ($path === "backup/restore" && $method === "POST") {
     $sql = strip_sql_comments($sql);
     $stmts = split_sql_statements($sql);
 
-    $pdo->beginTransaction();
     $pdo->exec("SET FOREIGN_KEY_CHECKS=0");
 
     foreach ($stmts as $s) {
       $s = trim($s);
       if ($s === "") continue;
-      $pdo->exec($s);
+      try {
+        $pdo->exec($s);
+      } catch (Throwable $stmtEx) {
+        throw new Exception("Error executing SQL query: " . $stmtEx->getMessage() . " | Query: " . substr($s, 0, 200));
+      }
     }
 
     $pdo->exec("SET FOREIGN_KEY_CHECKS=1");
-    $pdo->commit();
 
     respond(["success" => true, "message" => "Restored successfully", "name" => $name], 200);
   } catch (Throwable $e) {
-    if ($pdo->inTransaction()) $pdo->rollBack();
+    try {
+      $pdo->exec("SET FOREIGN_KEY_CHECKS=1");
+    } catch (Throwable $ignore) {}
     respond(["error" => "Restore failed: " . $e->getMessage()], 500);
   }
 }
@@ -345,4 +398,4 @@ if ($path === "backup/clear" && $method === "DELETE") {
   ], 200);
 }
 
-respond(["error" => "Not Found"], 404);
+respond(["error" => "Not Found", "debug" => ["path" => $path, "method" => $method, "get" => $_GET]], 404);

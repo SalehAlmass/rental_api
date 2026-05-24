@@ -22,8 +22,23 @@ function input_all(): array {
  * GET /clients
  */
 if ($path === "clients" && $method === "GET") {
-  $sql = "SELECT * FROM clients ORDER BY id DESC";
-  respond($pdo->query($sql)->fetchAll());
+  $sql = "
+    SELECT c.*,
+           IFNULL(debt.total_debt, 0) AS total_debt
+    FROM clients c
+    LEFT JOIN (
+      SELECT client_id, SUM(remaining_amount) AS total_debt
+      FROM rents
+      WHERE remaining_amount > 0
+      GROUP BY client_id
+    ) debt ON debt.client_id = c.id
+    ORDER BY c.id DESC
+  ";
+  $rows = $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+  foreach ($rows as &$r) {
+    $r['total_debt'] = (float)($r['total_debt'] ?? 0);
+  }
+  respond($rows);
 }
 
 /**
@@ -42,14 +57,43 @@ if ($path === "clients" && $method === "POST") {
 
   if ($name === "") respond(["error" => "name is required"], 400);
 
-  // (اختياري) منع تكرار الهوية لو تحب
-  // if ($national_id !== "") { ... }
+  $stChk = $pdo->prepare("SELECT id FROM clients WHERE name = ? OR (national_id != '' AND national_id = ?) OR (phone != '' AND phone = ?)");
+  $stChk->execute([$name, $national_id, $phone]);
+  if ($stChk->fetch()) {
+    respond(["error" => "تمت اضافة هذا العميل مسبقا"], 409);
+  }
 
   $st = $pdo->prepare("INSERT INTO clients (name, national_id, phone, address, is_frozen, credit_limit, image_path)
                        VALUES (?,?,?,?,?,?,?)");
   $st->execute([$name, $national_id, $phone, $address, $is_frozen, $credit_limit, $image_path]);
 
   respond(["id" => (int)$pdo->lastInsertId()], 201);
+}
+
+/**
+ * GET /clients/{id}
+ */
+if (preg_match('#^clients/(\d+)$#', $path, $m) && $method === "GET") {
+  $id = (int)$m[1];
+  $sql = "
+    SELECT c.*,
+           IFNULL(debt.total_debt, 0) AS total_debt
+    FROM clients c
+    LEFT JOIN (
+      SELECT client_id, SUM(remaining_amount) AS total_debt
+      FROM rents
+      WHERE remaining_amount > 0
+      GROUP BY client_id
+    ) debt ON debt.client_id = c.id
+    WHERE c.id = ?
+    LIMIT 1
+  ";
+  $st = $pdo->prepare($sql);
+  $st->execute([$id]);
+  $row = $st->fetch(PDO::FETCH_ASSOC);
+  if (!$row) respond(["error" => "Client not found"], 404);
+  $row['total_debt'] = (float)($row['total_debt'] ?? 0);
+  respond(["success" => true, "data" => $row]);
 }
 
 /**
@@ -60,9 +104,20 @@ if (preg_match('#^clients/(\d+)$#', $path, $m) && $method === "PUT") {
   $in = input_all();
 
   // تأكد العميل موجود
-  $chk = $pdo->prepare("SELECT id FROM clients WHERE id=?");
+  $chk = $pdo->prepare("SELECT * FROM clients WHERE id=?");
   $chk->execute([$id]);
-  if (!$chk->fetch()) respond(["error" => "Client not found"], 404);
+  $currentClient = $chk->fetch(PDO::FETCH_ASSOC);
+  if (!$currentClient) respond(["error" => "Client not found"], 404);
+
+  $newName = array_key_exists('name', $in) ? trim((string)$in['name']) : $currentClient['name'];
+  $newNatId = array_key_exists('national_id', $in) ? trim((string)$in['national_id']) : $currentClient['national_id'];
+  $newPhone = array_key_exists('phone', $in) ? trim((string)$in['phone']) : $currentClient['phone'];
+
+  $stDup = $pdo->prepare("SELECT id FROM clients WHERE id != ? AND (name = ? OR (national_id != '' AND national_id = ?) OR (phone != '' AND phone = ?))");
+  $stDup->execute([$id, $newName, $newNatId, $newPhone]);
+  if ($stDup->fetch()) {
+    respond(["error" => "تمت اضافة هذا العميل مسبقا"], 409);
+  }
 
   // نبني تحديث ديناميكي (يحدث فقط اللي تم إرساله)
   $fields = [];
@@ -113,6 +168,33 @@ if (preg_match('#^clients/(\d+)$#', $path, $m) && $method === "DELETE") {
   }
 
   respond(["ok" => true, "id" => $id]);
+}
+
+/**
+ * GET /clients/{id}/collection-followups
+ */
+if (preg_match('#^clients/(\d+)/collection-followups$#', $path, $m) && $method === "GET") {
+  $clientId = (int)$m[1];
+
+  $st = $pdo->prepare("
+    SELECT cf.*, u.username AS created_by_name
+    FROM collection_followups cf
+    LEFT JOIN users u ON cf.created_by_user_id = u.id
+    WHERE cf.client_id = ?
+    ORDER BY cf.created_at DESC
+  ");
+  $st->execute([$clientId]);
+  $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+  foreach ($rows as &$r) {
+    $r['id'] = (int)$r['id'];
+    $r['rent_id'] = (int)$r['rent_id'];
+    $r['rent_no'] = (int)$r['rent_id'];
+    $r['client_id'] = (int)$r['client_id'];
+    $r['created_by_user_id'] = $r['created_by_user_id'] !== null ? (int)$r['created_by_user_id'] : null;
+  }
+
+  respond(["data" => $rows]);
 }
 
 respond(["error" => "Not Found"], 404);

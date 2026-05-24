@@ -18,7 +18,7 @@ ensure_financials_schema($pdo);
  */
 function recalc_rent_financials(PDO $pdo, int $rentId): void {
   // lock rent row to avoid race conditions
-  $st = $pdo->prepare("SELECT id, status, total_amount, paid_at
+  $st = $pdo->prepare("SELECT id, status, total_amount, paid_at, discount_amount
                        FROM rents WHERE id=? FOR UPDATE");
   $st->execute([$rentId]);
   $rent = $st->fetch();
@@ -33,7 +33,8 @@ function recalc_rent_financials(PDO $pdo, int $rentId): void {
   $paid = (float)$st2->fetchColumn();
 
   $total = (float)($rent['total_amount'] ?? 0);
-  $remaining = max($total - $paid, 0);
+  $discount = (float)($rent['discount_amount'] ?? 0);
+  $remaining = max($total - $discount - $paid, 0);
 
   $status = strtolower((string)($rent['status'] ?? ''));
   // IMPORTANT: never mark OPEN rent as paid

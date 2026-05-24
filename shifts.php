@@ -173,4 +173,40 @@ if ($path === "shifts/close" && $method === "POST") {
   ], 200);
 }
 
+/*
+|--------------------------------------------------------------------------
+| GET shifts/today-summary
+| Returns system-calculated cash and transfer totals for today
+| Used by the shift closing dialog to show read-only system values.
+|--------------------------------------------------------------------------
+*/
+if ($path === "shifts/today-summary" && $method === "GET") {
+  $shiftDate = $_GET['date'] ?? date('Y-m-d');
+  if (!is_ymd($shiftDate)) respond(["error" => "Invalid date"], 400);
+
+  // Sum of incoming payments by method for the given date
+  $st = $pdo->prepare("
+    SELECT
+      IFNULL(SUM(CASE WHEN LOWER(method) IN ('cash','نقد','نقدي') THEN amount ELSE 0 END), 0) AS cash_total,
+      IFNULL(SUM(CASE WHEN LOWER(method) IN ('transfer','تحويل','bank') THEN amount ELSE 0 END), 0) AS transfer_total,
+      IFNULL(SUM(amount), 0) AS total_income
+    FROM payments
+    WHERE type='in'
+      AND (is_void=0 OR is_void IS NULL)
+      AND DATE(created_at) = ?
+  ");
+  $st->execute([$shiftDate]);
+  $row = $st->fetch(PDO::FETCH_ASSOC);
+
+  respond([
+    "success" => true,
+    "data" => [
+      "date" => $shiftDate,
+      "cash_total" => (float)($row['cash_total'] ?? 0),
+      "transfer_total" => (float)($row['transfer_total'] ?? 0),
+      "total_income" => (float)($row['total_income'] ?? 0),
+    ]
+  ]);
+}
+
 respond(["error" => "Not Found"], 404);
