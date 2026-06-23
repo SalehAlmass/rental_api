@@ -52,6 +52,10 @@ function recalc_rent_financials(PDO $pdo, int $rentId): array {
                         WHERE id=?");
   $upd->execute([$paid, $remaining, $isPaid ? 1 : 0, $paidAt, $rentId]);
 
+  if (auto_close_rent_if_fully_paid($pdo, $rentId)) {
+    return recalc_rent_financials($pdo, $rentId);
+  }
+
   return [
     'paid_amount' => $paid,
     'remaining_amount' => $remaining,

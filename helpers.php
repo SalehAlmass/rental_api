@@ -471,3 +471,80 @@ function update_rent_closing_payment_status(PDO $pdo, int $rentId, int $paymentI
   }
 }
 
+function auto_close_rent_if_fully_paid(PDO $pdo, int $rentId): bool {
+  // 1. Fetch rent details
+  $st = $pdo->prepare("SELECT id, status, start_datetime, rate, equipment_id, discount_amount FROM rents WHERE id=?");
+  $st->execute([$rentId]);
+  $rent = $st->fetch();
+  if (!$rent) return false;
+
+  $status = strtolower((string)($rent['status'] ?? ''));
+  if ($status !== 'open') return false;
+
+  // 2. Calculate dynamic total at current time
+  $now = date('Y-m-d H:i:s');
+  $now_ts = strtotime($now);
+
+  $stItems = $pdo->prepare("SELECT * FROM rent_items WHERE rent_id=?");
+  $stItems->execute([$rentId]);
+  $items = $stItems->fetchAll(PDO::FETCH_ASSOC);
+
+  $total = 0.0;
+  if (empty($items)) {
+    $start_ts = strtotime((string)$rent["start_datetime"]);
+    if ($start_ts) {
+      $hrs = ($now_ts - $start_ts) / 3600;
+      $days = ceil($hrs / 24);
+      if ($days < 1) $days = 1;
+      $total = round($days * (float)($rent["rate"] ?? 0), 2);
+    }
+  } else {
+    foreach ($items as $it) {
+      $itemEnd = $it['status'] === 'open' ? $now : ($it['end_datetime'] ?? $now);
+      $start_ts = strtotime((string)$it['start_datetime']);
+      $iEnd_ts = strtotime($itemEnd);
+      if ($start_ts && $iEnd_ts) {
+        $hrs = ($iEnd_ts - $start_ts) / 3600;
+        $days = ceil($hrs / 24);
+        if ($days < 1) $days = 1;
+        $total += round($days * (float)$it['rate'], 2);
+      }
+    }
+  }
+
+  // 3. Fetch paid amount for this rent
+  $st2 = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM payments WHERE rent_id=? AND (is_void=0 OR is_void IS NULL) AND type='in'");
+  $st2->execute([$rentId]);
+  $paid = (float)$st2->fetchColumn();
+
+  $discount = (float)($rent['discount_amount'] ?? 0);
+  $remaining = max($total - $discount - $paid, 0.0);
+
+  // 4. If remaining is 0 (or close to 0), close the rent!
+  if ($remaining <= 0.0001) {
+    // A. Update rent items status to closed
+    $updItem = $pdo->prepare("UPDATE rent_items SET end_datetime=?, status='closed' WHERE rent_id=? AND status='open'");
+    $updItem->execute([$now, $rentId]);
+
+    // B. Update equipment status to available
+    $updEq = $pdo->prepare("UPDATE equipment SET status='available' WHERE id IN (SELECT equipment_id FROM rent_items WHERE rent_id=?)");
+    $updEq->execute([$rentId]);
+    
+    // Also backward compatibility equipment update
+    $eqid = (int)$rent["equipment_id"];
+    if ($eqid > 0) {
+      $updEqSingle = $pdo->prepare("UPDATE equipment SET status='available' WHERE id=?");
+      $updEqSingle->execute([$eqid]);
+    }
+
+    // C. Update rent status to closed
+    $upd = $pdo->prepare("UPDATE rents SET end_datetime=?, total_amount=?, status='closed' WHERE id=?");
+    $upd->execute([$now, $total, $rentId]);
+
+    audit_log($pdo, 'rent_closed_auto', 'rent', $rentId, ['total_amount' => $total, 'trigger' => 'payment_paid_in_full']);
+    return true;
+  }
+
+  return false;
+}
+
