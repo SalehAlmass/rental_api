@@ -395,7 +395,7 @@ if (preg_match('#^rents/(\d+)/close$#', $path, $m) && $method === "POST") {
 
     if (empty($items)) {
       $start_ts = strtotime((string)$rent["start_datetime"]);
-      if ($start_ts && $end_ts > $start_ts) {
+      if ($start_ts) {
         $hrs = ($end_ts - $start_ts) / 3600;
         $days = ceil($hrs / 24);
         if ($days < 1) $days = 1;
@@ -415,7 +415,7 @@ if (preg_match('#^rents/(\d+)/close$#', $path, $m) && $method === "POST") {
         
         $start_ts = strtotime((string)$it['start_datetime']);
         $iEnd_ts = strtotime($itemEnd);
-        if ($start_ts && $iEnd_ts && $iEnd_ts > $start_ts) {
+        if ($start_ts && $iEnd_ts) {
           $hrs = ($iEnd_ts - $start_ts) / 3600;
           $days = ceil($hrs / 24);
           if ($days < 1) $days = 1;

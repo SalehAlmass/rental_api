@@ -129,6 +129,32 @@ function ensure_financials_schema(PDO $pdo): void {
       INDEX(client_id),
       INDEX(created_by_user_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+  // Run database indexing checks to optimize queries and ensure concurrency stability
+  ensure_performance_indexes($pdo);
+}
+
+function ensure_performance_indexes(PDO $pdo): void {
+  // 1. rents indexes
+  ensure_index($pdo, 'rents', 'idx_rents_client_id', "CREATE INDEX idx_rents_client_id ON rents (client_id)");
+  ensure_index($pdo, 'rents', 'idx_rents_status', "CREATE INDEX idx_rents_status ON rents (status)");
+  ensure_index($pdo, 'rents', 'idx_rents_created_at', "CREATE INDEX idx_rents_created_at ON rents (created_at)");
+
+  // 2. payments indexes
+  ensure_index($pdo, 'payments', 'idx_payments_client_id', "CREATE INDEX idx_payments_client_id ON payments (client_id)");
+  ensure_index($pdo, 'payments', 'idx_payments_rent_id', "CREATE INDEX idx_payments_rent_id ON payments (rent_id)");
+  ensure_index($pdo, 'payments', 'idx_payments_user_id', "CREATE INDEX idx_payments_user_id ON payments (user_id)");
+  ensure_index($pdo, 'payments', 'idx_payments_created_at', "CREATE INDEX idx_payments_created_at ON payments (created_at)");
+
+  // 3. audit_logs indexes
+  ensure_index($pdo, 'audit_logs', 'idx_audit_logs_user_id', "CREATE INDEX idx_audit_logs_user_id ON audit_logs (user_id)");
+  ensure_index($pdo, 'audit_logs', 'idx_audit_logs_created_at', "CREATE INDEX idx_audit_logs_created_at ON audit_logs (created_at)");
+  ensure_index($pdo, 'audit_logs', 'idx_audit_logs_entity_id', "CREATE INDEX idx_audit_logs_entity_id ON audit_logs (entity, entity_id)");
+
+  // 4. clients indexes
+  ensure_index($pdo, 'clients', 'idx_clients_phone', "CREATE INDEX idx_clients_phone ON clients (phone)");
+  ensure_index($pdo, 'clients', 'idx_clients_national_id', "CREATE INDEX idx_clients_national_id ON clients (national_id)");
+  ensure_index($pdo, 'clients', 'idx_clients_name', "CREATE INDEX idx_clients_name ON clients (name)");
 }
 
 function audit_log(PDO $pdo, string $action, ?string $entity = null, ?int $entityId = null, array $meta = []): void {
@@ -178,6 +204,16 @@ function jwt_verify(string $token, string $secret): ?array {
   $payload = json_decode(b64url_dec($p), true);
   return is_array($payload) ? $payload : null;
 }
+function auth_user(): ?array {
+  $payload = $GLOBALS['auth_payload'] ?? null;
+  if (!$payload) return null;
+  return [
+    'id' => (int)($payload['sub'] ?? 0),
+    'username' => $payload['username'] ?? '',
+    'role' => $payload['role'] ?? '',
+  ];
+}
+
 function require_auth(): array {
   global $JWT_SECRET;
 
@@ -206,5 +242,232 @@ function require_auth(): array {
   if (!$payload) respond(["error"=>"رمز غير صالح"], 401);
   if (isset($payload["exp"]) && time() > (int)$payload["exp"]) respond(["error"=>"انتهت صلاحية الرمز"], 401);
 
+  $GLOBALS['auth_payload'] = $payload;
+
   return $payload;
 }
+
+function setting_get(PDO $pdo, string $key, ?string $default = null): ?string
+{
+  $st = $pdo->prepare("SELECT setting_value FROM app_settings WHERE setting_key=? LIMIT 1");
+  $st->execute([$key]);
+  $v = $st->fetchColumn();
+  return $v === false ? $default : ($v === null ? $default : (string)$v);
+}
+
+function setting_set(PDO $pdo, string $key, ?string $value): void
+{
+  $st = $pdo->prepare("INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?)
+                       ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)");
+  $st->execute([$key, $value]);
+}
+
+function default_user_permissions(?string $role = null): array
+{
+  $role = strtolower(trim((string)$role));
+  if ($role === 'admin') {
+    return [
+      'contract_hour_pricing_mode' => 'ask',
+      'contract_payment_receipt_mode' => 'ask',
+    ];
+  }
+  return [
+    'contract_hour_pricing_mode' => 'inherit',
+    'contract_payment_receipt_mode' => 'inherit',
+  ];
+}
+
+function normalize_user_permissions($raw, ?string $role = null): array
+{
+  $defaults = default_user_permissions($role);
+  if (is_string($raw) && trim($raw) !== '') {
+    $decoded = json_decode($raw, true);
+    if (is_array($decoded)) $raw = $decoded;
+  }
+  if (!is_array($raw)) $raw = [];
+
+  $hourMode = strtolower(trim((string)($raw['contract_hour_pricing_mode'] ?? $defaults['contract_hour_pricing_mode'])));
+  $receiptMode = strtolower(trim((string)($raw['contract_payment_receipt_mode'] ?? $defaults['contract_payment_receipt_mode'])));
+
+  if (!in_array($hourMode, ['inherit', 'auto', 'ask'], true)) {
+    $hourMode = $defaults['contract_hour_pricing_mode'];
+  }
+  if (!in_array($receiptMode, ['inherit', 'auto', 'ask'], true)) {
+    $receiptMode = $defaults['contract_payment_receipt_mode'];
+  }
+
+  return [
+    'contract_hour_pricing_mode' => $hourMode,
+    'contract_payment_receipt_mode' => $receiptMode,
+  ];
+}
+
+function effective_contract_closing_modes(PDO $pdo, ?array $user = null): array
+{
+  $globalHour = setting_get($pdo, 'contract.hour_pricing_mode', 'ask') ?? 'ask';
+  $globalReceipt = setting_get($pdo, 'contract.payment_receipt_mode', 'auto') ?? 'auto';
+
+  $role = strtolower(trim((string)($user['role'] ?? 'employee')));
+  $permissions = normalize_user_permissions($user['permissions_json'] ?? ($user['permissions'] ?? null), $role);
+
+  $hourMode = $permissions['contract_hour_pricing_mode'] === 'inherit'
+    ? $globalHour
+    : $permissions['contract_hour_pricing_mode'];
+  $receiptMode = $permissions['contract_payment_receipt_mode'] === 'inherit'
+    ? $globalReceipt
+    : $permissions['contract_payment_receipt_mode'];
+
+  return [
+    'hour_pricing_mode' => $hourMode,
+    'payment_receipt_mode' => $receiptMode,
+    'global_hour_pricing_mode' => $globalHour,
+    'global_payment_receipt_mode' => $globalReceipt,
+    'permissions' => $permissions,
+  ];
+}
+
+function ensure_depreciation_schema(PDO $pdo): void
+{
+  ensure_column($pdo, 'equipment', 'purchase_price', "ALTER TABLE equipment ADD COLUMN purchase_price DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER hourly_rate");
+  ensure_column($pdo, 'equipment', 'salvage_value', "ALTER TABLE equipment ADD COLUMN salvage_value DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER purchase_price");
+  ensure_column($pdo, 'equipment', 'useful_life_months', "ALTER TABLE equipment ADD COLUMN useful_life_months INT NOT NULL DEFAULT 60 AFTER salvage_value");
+  ensure_column($pdo, 'equipment', 'depreciation_start_date', "ALTER TABLE equipment ADD COLUMN depreciation_start_date DATE NULL AFTER useful_life_months");
+  ensure_column($pdo, 'equipment', 'depreciation_monthly', "ALTER TABLE equipment ADD COLUMN depreciation_monthly DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER depreciation_rate");
+  ensure_column($pdo, 'equipment', 'depreciation_accumulated', "ALTER TABLE equipment ADD COLUMN depreciation_accumulated DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER depreciation_monthly");
+  ensure_column($pdo, 'equipment', 'book_value', "ALTER TABLE equipment ADD COLUMN book_value DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER depreciation_accumulated");
+  ensure_column($pdo, 'equipment', 'estimated_usage_days', "ALTER TABLE equipment ADD COLUMN estimated_usage_days INT NOT NULL DEFAULT 365 AFTER book_value");
+  ensure_column($pdo, 'equipment', 'operational_depreciation_per_day', "ALTER TABLE equipment ADD COLUMN operational_depreciation_per_day DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER estimated_usage_days");
+  ensure_column($pdo, 'equipment', 'operational_depreciation_accumulated', "ALTER TABLE equipment ADD COLUMN operational_depreciation_accumulated DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER operational_depreciation_per_day");
+  ensure_column($pdo, 'equipment', 'last_depreciation_month', "ALTER TABLE equipment ADD COLUMN last_depreciation_month CHAR(7) NULL AFTER operational_depreciation_accumulated");
+
+  ensure_table($pdo, 'equipment_depreciation_entries', "CREATE TABLE equipment_depreciation_entries (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    equipment_id INT NOT NULL,
+    depreciation_month CHAR(7) NOT NULL,
+    accounting_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+    operational_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+    voucher_payment_id INT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_equipment_dep_month (equipment_id, depreciation_month),
+    INDEX idx_equipment_dep_month (depreciation_month)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function depreciation_compute_values(array $row): array
+{
+  $purchase = isset($row['purchase_price']) ? (float)$row['purchase_price'] : 0.0;
+  $salvage = isset($row['salvage_value']) ? (float)$row['salvage_value'] : 0.0;
+  $lifeMonths = max(1, (int)($row['useful_life_months'] ?? 60));
+  $estimatedUsageDays = max(1, (int)($row['estimated_usage_days'] ?? 365));
+  $base = max($purchase - $salvage, 0.0);
+  $monthly = round($base / $lifeMonths, 2);
+  $perDay = round($base / $estimatedUsageDays, 2);
+  $accountingAccum = isset($row['depreciation_accumulated']) ? (float)$row['depreciation_accumulated'] : 0.0;
+  $bookValue = max($purchase - $accountingAccum, $salvage, 0.0);
+  return [
+    'purchase_price' => $purchase,
+    'salvage_value' => $salvage,
+    'useful_life_months' => $lifeMonths,
+    'estimated_usage_days' => $estimatedUsageDays,
+    'depreciation_monthly' => $monthly,
+    'operational_depreciation_per_day' => $perDay,
+    'book_value' => round($bookValue, 2),
+  ];
+}
+
+function update_equipment_depreciation_snapshot(PDO $pdo, int $equipmentId): void
+{
+  ensure_depreciation_schema($pdo);
+  $st = $pdo->prepare("SELECT * FROM equipment WHERE id=? LIMIT 1");
+  $st->execute([$equipmentId]);
+  $row = $st->fetch(PDO::FETCH_ASSOC);
+  if (!$row) return;
+  $vals = depreciation_compute_values($row);
+  $upd = $pdo->prepare("UPDATE equipment SET depreciation_monthly=?, operational_depreciation_per_day=?, book_value=? WHERE id=?");
+  $upd->execute([$vals['depreciation_monthly'], $vals['operational_depreciation_per_day'], $vals['book_value'], $equipmentId]);
+}
+
+function process_monthly_depreciation(PDO $pdo): void
+{
+  ensure_financials_schema($pdo);
+  ensure_depreciation_schema($pdo);
+  $month = date('Y-m');
+  $startMonth = date('Y-m-01 00:00:00');
+  $endMonth = date('Y-m-t 23:59:59');
+  $rows = $pdo->query("SELECT * FROM equipment WHERE COALESCE(is_active,1)=1")->fetchAll(PDO::FETCH_ASSOC);
+
+  foreach ($rows as $row) {
+    $equipmentId = (int)$row['id'];
+    $startDate = $row['depreciation_start_date'] ?? null;
+    if (!$startDate || substr((string)$startDate, 0, 7) > $month) {
+      update_equipment_depreciation_snapshot($pdo, $equipmentId);
+      continue;
+    }
+
+    $chk = $pdo->prepare("SELECT id FROM equipment_depreciation_entries WHERE equipment_id=? AND depreciation_month=? LIMIT 1");
+    $chk->execute([$equipmentId, $month]);
+    if ($chk->fetchColumn()) {
+      update_equipment_depreciation_snapshot($pdo, $equipmentId);
+      continue;
+    }
+
+    $vals = depreciation_compute_values($row);
+    $accountingAmount = (float)$vals['depreciation_monthly'];
+
+    $stDays = $pdo->prepare("SELECT COUNT(DISTINCT DATE(COALESCE(closed_at, end_datetime, start_datetime)))
+                             FROM rents
+                             WHERE equipment_id=?
+                               AND start_datetime <= ?
+                               AND COALESCE(closed_at, end_datetime, start_datetime) >= ?");
+    $stDays->execute([$equipmentId, $endMonth, $startMonth]);
+    $daysUsed = (int)$stDays->fetchColumn();
+    $operationalAmount = round($daysUsed * (float)$vals['operational_depreciation_per_day'], 2);
+
+    $pdo->beginTransaction();
+    try {
+      $paymentId = null;
+      if ($accountingAmount > 0.0001) {
+        $idem = 'dep_' . $equipmentId . '_' . $month;
+        $stPay = $pdo->prepare("SELECT id FROM payments WHERE idempotency_key=? LIMIT 1");
+        $stPay->execute([$idem]);
+        $paymentId = $stPay->fetchColumn();
+        if (!$paymentId) {
+          $insPay = $pdo->prepare("INSERT INTO payments (type, amount, client_id, rent_id, equipment_id, method, reference_no, notes, user_id, is_void, idempotency_key, created_at)
+                                   VALUES ('depreciation', ?, NULL, NULL, ?, 'system', ?, ?, NULL, 0, ?, NOW())");
+          $insPay->execute([
+            $accountingAmount,
+            $equipmentId,
+            'DEP-' . $month . '-' . $equipmentId,
+            'قيد إهلاك شهري تلقائي للمعدة #' . $equipmentId . ' عن شهر ' . $month,
+            $idem,
+          ]);
+          $paymentId = (int)$pdo->lastInsertId();
+        }
+      }
+
+      $ins = $pdo->prepare("INSERT INTO equipment_depreciation_entries (equipment_id, depreciation_month, accounting_amount, operational_amount, voucher_payment_id)
+                            VALUES (?,?,?,?,?)");
+      $ins->execute([$equipmentId, $month, $accountingAmount, $operationalAmount, $paymentId ?: null]);
+
+      $newAccum = min((float)($row['depreciation_accumulated'] ?? 0) + $accountingAmount, max((float)$vals['purchase_price'] - (float)$vals['salvage_value'], 0.0));
+      $newOperationalAccum = (float)($row['operational_depreciation_accumulated'] ?? 0) + $operationalAmount;
+      $newBook = max((float)$vals['purchase_price'] - $newAccum, (float)$vals['salvage_value'], 0.0);
+      $upd = $pdo->prepare("UPDATE equipment SET depreciation_monthly=?, operational_depreciation_per_day=?, depreciation_accumulated=?, operational_depreciation_accumulated=?, book_value=?, last_depreciation_month=? WHERE id=?");
+      $upd->execute([$vals['depreciation_monthly'], $vals['operational_depreciation_per_day'], round($newAccum,2), round($newOperationalAccum,2), round($newBook,2), $month, $equipmentId]);
+      $pdo->commit();
+    } catch (Throwable $e) {
+      if ($pdo->inTransaction()) $pdo->rollBack();
+    }
+  }
+}
+
+function update_rent_closing_payment_status(PDO $pdo, int $rentId, int $paymentId, string $method): void {
+  $st = $pdo->prepare("SELECT status FROM rents WHERE id=? LIMIT 1");
+  $st->execute([$rentId]);
+  $status = strtolower((string)$st->fetchColumn());
+  if ($status === 'closed') {
+    $upd = $pdo->prepare("UPDATE rents SET closing_payment_status='created', closing_payment_id=?, closing_payment_method=? WHERE id=?");
+    $upd->execute([$paymentId, $method, $rentId]);
+  }
+}
+

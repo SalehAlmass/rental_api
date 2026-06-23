@@ -118,11 +118,13 @@ if ($path === "payments" && $method === "GET") {
   $sql = "SELECT p.*,
                  c.name AS client_name,
                  r.id   AS rent_no,
-                 eq.name AS equipment_name
+                 eq.name AS equipment_name,
+                 u.username AS username
           FROM payments p
           LEFT JOIN clients c ON p.client_id = c.id
           LEFT JOIN rents   r ON p.rent_id = r.id
           LEFT JOIN equipment eq ON p.equipment_id = eq.id
+          LEFT JOIN users   u ON p.user_id = u.id
           $where
           ORDER BY p.id DESC";
 
@@ -247,6 +249,7 @@ if ($path === "payments" && $method === "POST") {
 
       // update rent financials after insert
       recalc_rent_financials($pdo, (int)$rent_id);
+      update_rent_closing_payment_status($pdo, (int)$rent_id, $newId, $methodPay);
       audit_log($pdo, 'payment_created', 'payment', $newId, ['rent_id' => $rent_id, 'amount' => $amount, 'type' => $type]);
 
       $pdo->commit();
@@ -276,6 +279,7 @@ if ($path === "payments" && $method === "POST") {
     $pdo->beginTransaction();
     try {
       recalc_rent_financials($pdo, (int)$rent_id);
+      update_rent_closing_payment_status($pdo, (int)$rent_id, $newId, $methodPay);
       $pdo->commit();
     } catch (Throwable $e) {
       if ($pdo->inTransaction()) $pdo->rollBack();
