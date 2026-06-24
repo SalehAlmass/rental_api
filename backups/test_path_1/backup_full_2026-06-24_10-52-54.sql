@@ -1,6 +1,6 @@
 -- Rental System Backup
 -- Type: full
--- Generated at: 2026-06-24 10:45:39
+-- Generated at: 2026-06-24 10:52:54
 
 SET FOREIGN_KEY_CHECKS=0;
 SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO';
@@ -18,6 +18,8 @@ CREATE TABLE `app_settings` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 INSERT INTO `app_settings` VALUES 
+('backup_custom_path_1','C:/xampp/htdocs/alkhair/rental_api/backups/test_path_1','2026-06-24 10:46:25'),
+('backup_custom_path_2','C:/xampp/htdocs/alkhair/rental_api/backups/test_path_2','2026-06-24 10:46:25'),
 ('depreciation.processed_month','2026-05','2026-05-07 08:48:31'),
 ('schema.depreciation.version','2026_05_depreciation_v1','2026-05-07 08:48:31'),
 ('schema.financials.version','2026_05_perf_indexes_v1','2026-05-07 08:48:31');

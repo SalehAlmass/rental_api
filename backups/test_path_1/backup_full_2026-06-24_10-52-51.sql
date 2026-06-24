@@ -1,6 +1,6 @@
 -- Rental System Backup
 -- Type: full
--- Generated at: 2026-06-24 10:46:33
+-- Generated at: 2026-06-24 10:52:51
 
 SET FOREIGN_KEY_CHECKS=0;
 SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO';
