@@ -70,6 +70,9 @@ function ensure_financials_schema(PDO $pdo): void {
   ensure_column($pdo, 'rents', 'discount_amount', "ALTER TABLE rents ADD COLUMN discount_amount DECIMAL(12,2) NOT NULL DEFAULT 0");
   ensure_column($pdo, 'rents', 'discount_note', "ALTER TABLE rents ADD COLUMN discount_note TEXT NULL");
 
+  // rents: archive support (soft-hide closed contracts without deleting)
+  ensure_column($pdo, 'rents', 'archived_at', "ALTER TABLE rents ADD COLUMN archived_at DATETIME NULL");
+
   // payments: idempotency
   ensure_column($pdo, 'payments', 'idempotency_key', "ALTER TABLE payments ADD COLUMN idempotency_key VARCHAR(80) NULL");
   // unique when key present (same key cannot be inserted twice)
@@ -129,6 +132,11 @@ function ensure_financials_schema(PDO $pdo): void {
       INDEX(client_id),
       INDEX(created_by_user_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+  // Update closed contracts that have NULL closed_at to have closed_at = end_datetime
+  try {
+    $pdo->exec("UPDATE rents SET closed_at = end_datetime WHERE status = 'closed' AND closed_at IS NULL");
+  } catch (Throwable $e) {}
 
   // Run database indexing checks to optimize queries and ensure concurrency stability
   ensure_performance_indexes($pdo);
@@ -537,14 +545,98 @@ function auto_close_rent_if_fully_paid(PDO $pdo, int $rentId): bool {
       $updEqSingle->execute([$eqid]);
     }
 
+    $closed_by_user_id = null;
+    $auth = auth_user();
+    if ($auth && !empty($auth['id'])) {
+      $closed_by_user_id = (int)$auth['id'];
+    }
+
     // C. Update rent status to closed
-    $upd = $pdo->prepare("UPDATE rents SET end_datetime=?, total_amount=?, status='closed' WHERE id=?");
-    $upd->execute([$now, $total, $rentId]);
+    $upd = $pdo->prepare("UPDATE rents SET end_datetime=?, total_amount=?, status='closed', closed_at=NOW(), closed_by_user_id=? WHERE id=?");
+    $upd->execute([$now, $total, $closed_by_user_id, $rentId]);
 
     audit_log($pdo, 'rent_closed_auto', 'rent', $rentId, ['total_amount' => $total, 'trigger' => 'payment_paid_in_full']);
     return true;
   }
 
   return false;
+}
+
+function dump_database(PDO $pdo, string $mode = 'full'): string {
+  $pdo->exec("SET NAMES utf8mb4");
+  $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_NUM);
+  $sql = "";
+  $sql .= "-- Rental System Backup\n";
+  $sql .= "-- Type: {$mode}\n";
+  $sql .= "-- Generated at: " . date("Y-m-d H:i:s") . "\n\n";
+  $sql .= "SET FOREIGN_KEY_CHECKS=0;\n";
+  $sql .= "SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO';\n\n";
+
+  foreach ($tables as $t) {
+    $table = $t[0];
+
+    // إنشاء الجدول (full/def)
+    if ($mode !== 'log') {
+      $row = $pdo->query("SHOW CREATE TABLE `$table`")->fetch(PDO::FETCH_ASSOC);
+      $create = $row["Create Table"] ?? "";
+      $sql .= "\n-- ----------------------------\n";
+      $sql .= "-- Table: `$table`\n";
+      $sql .= "-- ----------------------------\n";
+      $sql .= "DROP TABLE IF EXISTS `$table`;\n";
+      $sql .= $create . ";\n\n";
+    }
+
+    // بيانات الجدول (full/log)
+    if ($mode === 'def') {
+      continue;
+    }
+
+    $stmt = $pdo->query("SELECT * FROM `$table`");
+    $colsCount = $stmt->columnCount();
+
+    $batch = [];
+    $batchSize = 200;
+    while ($r = $stmt->fetch(PDO::FETCH_NUM)) {
+      $vals = [];
+      for ($i=0; $i<$colsCount; $i++) {
+        $v = $r[$i];
+        if ($v === null) {
+          $vals[] = "NULL";
+        } else {
+          $vals[] = $pdo->quote($v);
+        }
+      }
+      $batch[] = "(" . implode(",", $vals) . ")";
+      if (count($batch) >= $batchSize) {
+        $sql .= "INSERT INTO `$table` VALUES \n" . implode(",\n", $batch) . ";\n";
+        $batch = [];
+      }
+    }
+    if (!empty($batch)) {
+      $sql .= "INSERT INTO `$table` VALUES \n" . implode(",\n", $batch) . ";\n";
+    }
+  }
+
+  $sql .= "\nSET FOREIGN_KEY_CHECKS=1;\n";
+  return $sql;
+}
+
+function copy_backup_to_custom_paths(PDO $pdo, string $sourceFullpath, string $filename): void {
+  $path1 = setting_get($pdo, "backup_custom_path_1", "");
+  $path2 = setting_get($pdo, "backup_custom_path_2", "");
+
+  if ($path1 !== "") {
+    $path1 = rtrim(str_replace('\\', '/', $path1), '/');
+    if (is_dir($path1)) {
+      @copy($sourceFullpath, $path1 . '/' . $filename);
+    }
+  }
+
+  if ($path2 !== "") {
+    $path2 = rtrim(str_replace('\\', '/', $path2), '/');
+    if (is_dir($path2)) {
+      @copy($sourceFullpath, $path2 . '/' . $filename);
+    }
+  }
 }
 

@@ -59,66 +59,7 @@ function list_backups($dir) {
   return $out;
 }
 
-function dump_database(PDO $pdo, string $mode = 'full') {
-  // تحسينات للأداء
-  $pdo->exec("SET NAMES utf8mb4");
-  $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_NUM);
-  $sql = "";
-  $sql .= "-- Rental System Backup\n";
-  $sql .= "-- Type: {$mode}\n";
-  $sql .= "-- Generated at: " . date("Y-m-d H:i:s") . "\n\n";
-  $sql .= "SET FOREIGN_KEY_CHECKS=0;\n";
-  $sql .= "SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO';\n\n";
 
-  foreach ($tables as $t) {
-    $table = $t[0];
-
-    // إنشاء الجدول (full/def)
-    if ($mode !== 'log') {
-      $row = $pdo->query("SHOW CREATE TABLE `$table`")->fetch(PDO::FETCH_ASSOC);
-      $create = $row["Create Table"] ?? "";
-      $sql .= "\n-- ----------------------------\n";
-      $sql .= "-- Table: `$table`\n";
-      $sql .= "-- ----------------------------\n";
-      $sql .= "DROP TABLE IF EXISTS `$table`;\n";
-      $sql .= $create . ";\n\n";
-    }
-
-    // بيانات الجدول (full/log)
-    if ($mode === 'def') {
-      continue;
-    }
-
-    $stmt = $pdo->query("SELECT * FROM `$table`");
-    $colsCount = $stmt->columnCount();
-
-    $batch = [];
-    $batchSize = 200; // عدّل إذا احتجت
-    while ($r = $stmt->fetch(PDO::FETCH_NUM)) {
-      $vals = [];
-      for ($i=0; $i<$colsCount; $i++) {
-        $v = $r[$i];
-        if ($v === null) {
-          $vals[] = "NULL";
-        } else {
-          // Escaping آمن
-          $vals[] = $pdo->quote($v);
-        }
-      }
-      $batch[] = "(" . implode(",", $vals) . ")";
-      if (count($batch) >= $batchSize) {
-        $sql .= "INSERT INTO `$table` VALUES \n" . implode(",\n", $batch) . ";\n";
-        $batch = [];
-      }
-    }
-    if (!empty($batch)) {
-      $sql .= "INSERT INTO `$table` VALUES \n" . implode(",\n", $batch) . ";\n";
-    }
-  }
-
-  $sql .= "\nSET FOREIGN_KEY_CHECKS=1;\n";
-  return $sql;
-}
 
 function strip_sql_comments($sql) {
   // remove /* ... */ blocks
@@ -177,6 +118,41 @@ function split_sql_statements($sql) {
 
 /*
 |-----------------------------------------------------------
+| GET backup/settings
+|-----------------------------------------------------------
+*/
+if ($path === "backup/settings" && $method === "GET") {
+  $path1 = setting_get($pdo, "backup_custom_path_1", "");
+  $path2 = setting_get($pdo, "backup_custom_path_2", "");
+  respond([
+    "success" => true,
+    "data" => [
+      "backup_custom_path_1" => $path1,
+      "backup_custom_path_2" => $path2,
+    ]
+  ], 200);
+}
+
+/*
+|-----------------------------------------------------------
+| POST backup/settings
+|-----------------------------------------------------------
+*/
+if ($path === "backup/settings" && $method === "POST") {
+  $in = json_in();
+  if (!$in) $in = $_POST;
+  $path1 = trim((string)($in["backup_custom_path_1"] ?? ""));
+  $path2 = trim((string)($in["backup_custom_path_2"] ?? ""));
+  setting_set($pdo, "backup_custom_path_1", $path1);
+  setting_set($pdo, "backup_custom_path_2", $path2);
+  respond([
+    "success" => true,
+    "message" => "تم حفظ مسارات النسخ الاحتياطي بنجاح"
+  ], 200);
+}
+
+/*
+|-----------------------------------------------------------
 | GET backup/list
 |-----------------------------------------------------------
 */
@@ -212,6 +188,7 @@ if ($path === "backup/create" && $method === "POST") {
   try {
     $sql = dump_database($pdo, $type);
     file_put_contents($fullpath, $sql);
+    copy_backup_to_custom_paths($pdo, $fullpath, $filename);
 
     // ✅ Auto-prune: keep only the latest 30 backups
     $allBackups = glob($backupDir . "/backup_*.sql") ?: [];

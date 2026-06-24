@@ -115,9 +115,11 @@ function fail(string $msg, int $code = 400, $details = null) {
 | GET /rents
 |----------------------------------------------------------- */
 if ($path === "rents" && $method === "GET") {
-  $clientId = isset($_GET['client_id']) ? (int)$_GET['client_id'] : 0;
-  $status   = isset($_GET['status']) ? strtolower(trim((string)$_GET['status'])) : '';
-  $limit    = isset($_GET['limit']) ? (int)$_GET['limit'] : 0;
+  $clientId        = isset($_GET['client_id']) ? (int)$_GET['client_id'] : 0;
+  $status          = isset($_GET['status']) ? strtolower(trim((string)$_GET['status'])) : '';
+  $limit           = isset($_GET['limit']) ? (int)$_GET['limit'] : 0;
+  $includeArchived = !empty($_GET['include_archived']);
+  $archivedOnly    = !empty($_GET['archived_only']);
 
   $conds = [];
   $params = [];
@@ -129,6 +131,13 @@ if ($path === "rents" && $method === "GET") {
   if ($status !== '' && in_array($status, ['open','closed','cancelled'], true)) {
     $conds[] = 'r.status = ?';
     $params[] = $status;
+  }
+
+  // Archive filter: by default hide archived, unless explicitly requested
+  if ($archivedOnly) {
+    $conds[] = 'r.archived_at IS NOT NULL';
+  } elseif (!$includeArchived) {
+    $conds[] = 'r.archived_at IS NULL';
   }
 
   $where = count($conds) ? ('WHERE ' . implode(' AND ', $conds)) : '';
@@ -149,6 +158,29 @@ if ($path === "rents" && $method === "GET") {
   $rows = $st->fetchAll(PDO::FETCH_ASSOC);
   attach_rent_items($pdo, $rows);
   ok($rows);
+}
+
+/* -----------------------------------------------------------
+| POST /rents/archive-closed
+| Archives all closed & fully-paid rents (remaining_amount ≈ 0)
+|----------------------------------------------------------- */
+if ($path === "rents/archive-closed" && $method === "POST") {
+  $auth = auth_user();
+  if (($auth['role'] ?? '') !== 'admin') {
+    fail('غير مصرح — المشرف فقط', 403);
+  }
+
+  $st = $pdo->prepare("UPDATE rents
+                        SET archived_at = NOW()
+                        WHERE status = 'closed'
+                          AND remaining_amount <= 0.01
+                          AND archived_at IS NULL");
+  $st->execute();
+  $count = $st->rowCount();
+
+  audit_log($pdo, 'rents_archived', 'rents', null, ['count' => $count]);
+
+  ok(['archived_count' => $count]);
 }
 
 /* -----------------------------------------------------------
@@ -218,7 +250,8 @@ if (preg_match('#^rents/(\d+)/financials$#', $path, $m) && $method === "GET") {
   $paid = to_float(($st2->fetch(PDO::FETCH_ASSOC)["paid"] ?? 0));
 
   // 4) remaining
-  $remaining = max(0.0, $total - $paid);
+  $discount = to_float($rent["discount_amount"] ?? 0);
+  $remaining = max(0.0, $total - $discount - $paid);
 
   // 5) ✅ لا تجعلها FullyPaid إذا العقد OPEN
   $status = strtolower((string)($rent["status"] ?? ""));
@@ -409,6 +442,9 @@ if (preg_match('#^rents/(\d+)/close$#', $path, $m) && $method === "POST") {
       if ($eqid > 0) $updEq->execute([$eqid]);
     } else {
       foreach ($items as $it) {
+        // Skip replaced items — successor item already accounts for its period
+        if ($it['status'] === 'replaced') continue;
+
         $itemEnd = $end;
         if ($it['status'] === 'open') {
           $updItem->execute([$end, $it['id']]);
@@ -428,12 +464,18 @@ if (preg_match('#^rents/(\d+)/close$#', $path, $m) && $method === "POST") {
       }
     }
 
+    $closed_by_user_id = null;
+    $auth = auth_user();
+    if ($auth && !empty($auth['id'])) {
+      $closed_by_user_id = (int)$auth['id'];
+    }
+
     $upd = $pdo->prepare("
       UPDATE rents
-      SET end_datetime=?, total_amount=?, discount_amount=?, discount_note=?, status='closed'
+      SET end_datetime=?, total_amount=?, discount_amount=?, discount_note=?, status='closed', closed_at=NOW(), closed_by_user_id=?
       WHERE id=?
     ");
-    $upd->execute([$end, $total, $discount_amount, $discount_note, $id]);
+    $upd->execute([$end, $total, $discount_amount, $discount_note, $closed_by_user_id, $id]);
 
 	    // ✅ update rent financials after final total is known
 	    recalc_rent_financials($pdo, $id);
@@ -569,7 +611,7 @@ if (preg_match('#^rents/(\d+)/replace_item$#', $path, $m) && $method === "POST")
     $updEqAvail = $pdo->prepare("UPDATE equipment SET status='available' WHERE id=?");
     $updEqAvail->execute([$oldEqId]);
 
-    $rate = array_key_exists("rate", $in) && $in["rate"] !== null ? to_float($in["rate"]) : to_float($newEq["hourly_rate"]);
+    $rate = array_key_exists("rate", $in) && $in["rate"] !== null ? to_float($in["rate"]) : to_float($oldItem["rate"]);
     
     $insNew = $pdo->prepare("
       INSERT INTO rent_items (rent_id, equipment_id, rate, notes, status, start_datetime)
@@ -592,6 +634,67 @@ if (preg_match('#^rents/(\d+)/replace_item$#', $path, $m) && $method === "POST")
 
     $pdo->commit();
     ok(["ok" => true, "replaced_at" => $now]);
+
+  } catch (Throwable $e) {
+    if ($pdo->inTransaction()) $pdo->rollBack();
+    fail("Server error", 500, $e->getMessage());
+  }
+}
+
+/* -----------------------------------------------------------
+| POST /rents/{id}/return_item
+|----------------------------------------------------------- */
+if (preg_match('#^rents/(\d+)/return_item$#', $path, $m) && $method === "POST") {
+  $id = (int)$m[1];
+  $in = json_in() ?: $_POST;
+  $eqId = (int)($in["equipment_id"] ?? 0);
+  $now  = date('Y-m-d H:i:s');
+
+  if ($eqId <= 0) fail("Missing equipment_id", 400);
+
+  $pdo->beginTransaction();
+  try {
+    $st = $pdo->prepare("SELECT id, status FROM rents WHERE id=? FOR UPDATE");
+    $st->execute([$id]);
+    $rent = $st->fetch();
+
+    if (!$rent || strtolower((string)$rent["status"]) !== "open") {
+      $pdo->rollBack();
+      fail("Rent not found or not open", 404);
+    }
+
+    $stItem = $pdo->prepare("SELECT * FROM rent_items WHERE rent_id=? AND equipment_id=? AND status='open' FOR UPDATE");
+    $stItem->execute([$id, $eqId]);
+    $item = $stItem->fetch();
+
+    if (!$item) {
+      $pdo->rollBack();
+      fail("Equipment not found in this rent or already closed", 404);
+    }
+
+    $stCount = $pdo->prepare("SELECT COUNT(*) FROM rent_items WHERE rent_id=? AND status='open'");
+    $stCount->execute([$id]);
+    $openCount = (int)$stCount->fetchColumn();
+
+    if ($openCount <= 1) {
+       $pdo->rollBack();
+       fail("لا يمكن إرجاع آخر معدة في العقد، الرجاء إغلاق العقد بدلاً من ذلك", 400);
+    }
+
+    $updItem = $pdo->prepare("UPDATE rent_items SET status='closed', end_datetime=? WHERE id=?");
+    $updItem->execute([$now, $item["id"]]);
+
+    $updEq = $pdo->prepare("UPDATE equipment SET status='available' WHERE id=?");
+    $updEq->execute([$eqId]);
+
+    // Recalculate rent financials just in case (though it's still open)
+    // Note: total_amount might not be final, but we can call recalc_rent_financials 
+    // Wait, recalc_rent_financials uses total_amount which is static until closed.
+    // The rent amount is calculated dynamically on frontend when open.
+    // So we don't need to recalculate total_amount here.
+
+    $pdo->commit();
+    ok(["ok" => true, "returned_at" => $now]);
 
   } catch (Throwable $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();
