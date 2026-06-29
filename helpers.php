@@ -169,6 +169,14 @@ function ensure_performance_indexes(PDO $pdo): void {
   ensure_index($pdo, 'clients', 'idx_clients_phone', "CREATE INDEX idx_clients_phone ON clients (phone)");
   ensure_index($pdo, 'clients', 'idx_clients_national_id', "CREATE INDEX idx_clients_national_id ON clients (national_id)");
   ensure_index($pdo, 'clients', 'idx_clients_name', "CREATE INDEX idx_clients_name ON clients (name)");
+
+  // 5. Additional payments indexes for financial reports
+  ensure_index($pdo, 'payments', 'idx_payments_type', "CREATE INDEX idx_payments_type ON payments (type)");
+  ensure_index($pdo, 'payments', 'idx_payments_method', "CREATE INDEX idx_payments_method ON payments (method)");
+  ensure_index($pdo, 'payments', 'idx_payments_is_void', "CREATE INDEX idx_payments_is_void ON payments (is_void)");
+
+  // 6. Rents indexes for financial reports
+  ensure_index($pdo, 'rents', 'idx_rents_status_created', "CREATE INDEX idx_rents_status_created ON rents (status, created_at)");
 }
 
 function audit_log(
@@ -362,21 +370,24 @@ function normalize_user_permissions($raw, ?string $role = null): array
       'dashboard' => true, 'rents' => true, 'clients' => true, 'equipment' => true,
       'payments' => true, 'receipts' => true, 'reports' => true, 'hr' => true,
       'attendance' => true, 'shifts' => true, 'backup' => true, 'settings' => true,
-      'user_management' => true, 'print' => true, 'export' => true, 'audit_logs' => true
+      'user_management' => true, 'print' => true, 'export' => true, 'audit_logs' => true,
+      'financial_reports' => true,
     ];
   } elseif (strtolower((string)$role) === 'manager') {
     $screenDefaults = [
       'dashboard' => true, 'rents' => true, 'clients' => true, 'equipment' => true,
       'payments' => true, 'receipts' => true, 'reports' => true, 'hr' => true,
       'attendance' => true, 'shifts' => true, 'backup' => true, 'settings' => true,
-      'user_management' => false, 'print' => true, 'export' => true, 'audit_logs' => false
+      'user_management' => false, 'print' => true, 'export' => true, 'audit_logs' => false,
+      'financial_reports' => true,
     ];
   } else { // employee
     $screenDefaults = [
       'dashboard' => true, 'rents' => true, 'clients' => true, 'equipment' => true,
       'payments' => true, 'receipts' => true, 'reports' => false, 'hr' => false,
       'attendance' => true, 'shifts' => true, 'backup' => false, 'settings' => false,
-      'user_management' => false, 'print' => true, 'export' => true, 'audit_logs' => false
+      'user_management' => false, 'print' => true, 'export' => true, 'audit_logs' => false,
+      'financial_reports' => false,
     ];
   }
 

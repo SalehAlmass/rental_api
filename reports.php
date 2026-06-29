@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/config.php";
 require_once __DIR__ . "/helpers.php";
+require_once __DIR__ . "/helpers_financial.php";
 
 // ✅ Require login
 $auth   = require_auth();
@@ -183,21 +184,43 @@ if ($path === "reports/equipment-profit" && $method === "GET") {
   $out = [];
   foreach ($rows as $r) {
     $eid = (int)$r['equipment_id'];
-    $profit = (float)$r['profit'];
-    $cost = (float)($costMap[$eid] ?? 0);
+    $rentalRevenue  = (float)$r['profit'];
+    $maintenanceCost = (float)($costMap[$eid] ?? 0);
     $accDep = (float)(($depMap[$eid]['accounting'] ?? 0));
-    $opDep = (float)(($depMap[$eid]['operational'] ?? 0));
+    $opDep  = (float)(($depMap[$eid]['operational'] ?? 0));
+    $netProfit = $rentalRevenue - $maintenanceCost - $accDep;
+    $opNet     = $rentalRevenue - $maintenanceCost - $opDep;
+
+    // Fetch purchase price + rental days for this equipment in the period
+    $eqSt = $pdo->prepare("SELECT purchase_price, COALESCE(book_value,0) AS book_value FROM equipment WHERE id=? LIMIT 1");
+    $eqSt->execute([$eid]);
+    $eqRow = $eqSt->fetch(PDO::FETCH_ASSOC);
+    $purchasePrice = (float)($eqRow['purchase_price'] ?? 0);
+
+    // Count rental days in period
+    $rdParams = [$eid];
+    $rdConds  = ["equipment_id=?"];
+    build_date_filter("created_at", $from, $to, $rdConds, $rdParams);
+    $rdSt = $pdo->prepare("SELECT COALESCE(SUM(TIMESTAMPDIFF(HOUR, start_datetime, IFNULL(closed_at, NOW()))/24),0) AS rental_days FROM rents WHERE " . implode(' AND ', $rdConds));
+    $rdSt->execute($rdParams);
+    $rentalDays = round((float)$rdSt->fetchColumn(), 1);
+
+    $roi = ($purchasePrice > 0) ? round(($netProfit / $purchasePrice) * 100, 2) : null;
+
     $out[] = [
-      "equipment_id" => $eid,
-      "name" => $r['name'],
-      "type" => $r['type'],
-      "serial_no" => $r['serial_no'],
-      "profit" => $profit,
-      "cost" => $cost,
-      "accounting_depreciation" => $accDep,
-      "operational_depreciation" => $opDep,
-      "net" => $profit - $cost - $accDep,
-      "operational_net" => $profit - $cost - $opDep,
+      "equipment_id"             => $eid,
+      "name"                     => $r['name'],
+      "type"                     => $r['type'],
+      "serial_no"                => $r['serial_no'],
+      "purchase_price"           => $purchasePrice,
+      "rental_days"              => $rentalDays,
+      "rental_revenue"           => round($rentalRevenue, 2),
+      "maintenance_cost"         => round($maintenanceCost, 2),
+      "accounting_depreciation"  => round($accDep, 2),
+      "operational_depreciation" => round($opDep, 2),
+      "net_profit"               => round($netProfit, 2),
+      "operational_net"          => round($opNet, 2),
+      "roi_pct"                  => $roi,
     ];
   }
 
@@ -592,6 +615,215 @@ if ($path === 'reports/attendance' && $method === 'GET') {
     'weekly_holiday' => 'Friday',
     'items' => $items,
   ]]);
+}
+
+// ---------------------------------------------------------
+// FINANCIAL REPORTS — Permission Guard Helper
+// ---------------------------------------------------------
+function require_financial_permission(PDO $pdo, array $auth): void {
+  if (!has_permission($pdo, $auth, 'financial_reports')) {
+    respond(['error' => 'ممنوع: ليس لديك صلاحية التقارير المالية (financial_reports)'], 403);
+  }
+}
+
+// ---------------------------------------------------------
+// J) Financial Summary
+// GET reports/financial-summary?from_date=&to_date=&compare=true
+// ---------------------------------------------------------
+if ($path === 'reports/financial-summary' && $method === 'GET') {
+  require_financial_permission($pdo, $auth);
+
+  $from    = $_GET['from_date'] ?? ($_GET['from'] ?? null);
+  $to      = $_GET['to_date']   ?? ($_GET['to']   ?? null);
+  $compare = filter_var($_GET['compare'] ?? false, FILTER_VALIDATE_BOOLEAN);
+
+  $rentalRev  = calculate_rental_revenue($pdo, $from, $to);
+  $otherRev   = calculate_other_revenue($pdo, $from, $to);
+  $totalRev   = $rentalRev + $otherRev;
+  $expenses   = calculate_total_expenses($pdo, $from, $to);
+  $grossProfit = $totalRev - $expenses['maintenance'] - $expenses['depreciation'];
+  $opProfit    = $grossProfit - $expenses['payroll'];
+  $netProfit   = $totalRev - $expenses['total'];
+
+  $result = [
+    'filter'   => ['from' => $from, 'to' => $to],
+    'revenue'  => [
+      'rental_revenue' => round($rentalRev, 2),
+      'other_revenue'  => round($otherRev, 2),
+      'total_revenue'  => round($totalRev, 2),
+    ],
+    'expenses' => $expenses,
+    'results'  => [
+      'gross_profit'     => round($grossProfit, 2),
+      'operating_profit' => round($opProfit, 2),
+      'net_profit'       => round($netProfit, 2),
+    ],
+    'kpis' => [
+      'outstanding_amount' => calculate_outstanding_amount($pdo),
+      'total_asset_value'  => calculate_total_asset_value($pdo),
+      'profit_margin_pct'  => $totalRev > 0 ? round(($netProfit / $totalRev) * 100, 2) : 0,
+    ],
+  ];
+
+  if ($compare) {
+    // Calculate previous period of same length
+    $fromTs   = $from ? strtotime($from) : strtotime(date('Y-m-01'));
+    $toTs     = $to   ? strtotime($to)   : strtotime(date('Y-m-d'));
+    $lenDays  = max(1, (int)(($toTs - $fromTs) / 86400));
+    $prevFrom = date('Y-m-d', $fromTs - ($lenDays * 86400));
+    $prevTo   = date('Y-m-d', $fromTs - 86400);
+
+    $prevRev  = calculate_total_revenue($pdo, $prevFrom, $prevTo);
+    $prevExp  = calculate_total_expenses($pdo, $prevFrom, $prevTo);
+    $prevNet  = $prevRev - $prevExp['total'];
+    $revGrowth = $prevRev > 0 ? round((($totalRev - $prevRev) / $prevRev) * 100, 2) : null;
+
+    $result['comparison'] = [
+      'period'           => ['from' => $prevFrom, 'to' => $prevTo],
+      'total_revenue'    => round($prevRev, 2),
+      'net_profit'       => round($prevNet, 2),
+      'revenue_growth_pct' => $revGrowth,
+    ];
+  }
+
+  respond(['success' => true, 'data' => $result]);
+}
+
+// ---------------------------------------------------------
+// K) Profit & Loss Statement
+// GET reports/profit-loss?from_date=&to_date=
+// ---------------------------------------------------------
+if ($path === 'reports/profit-loss' && $method === 'GET') {
+  require_financial_permission($pdo, $auth);
+
+  $from = $_GET['from_date'] ?? ($_GET['from'] ?? null);
+  $to   = $_GET['to_date']   ?? ($_GET['to']   ?? null);
+
+  $pl = calculate_profit_loss($pdo, $from, $to);
+
+  respond([
+    'success' => true,
+    'filter'  => ['from' => $from, 'to' => $to],
+    'data'    => $pl,
+  ]);
+}
+
+// ---------------------------------------------------------
+// L) Cash Flow
+// GET reports/cash-flow?from_date=&to_date=
+// ---------------------------------------------------------
+if ($path === 'reports/cash-flow' && $method === 'GET') {
+  require_financial_permission($pdo, $auth);
+
+  $from = $_GET['from_date'] ?? ($_GET['from'] ?? null);
+  $to   = $_GET['to_date']   ?? ($_GET['to']   ?? null);
+
+  $cf = calculate_cash_flow($pdo, $from, $to);
+
+  respond([
+    'success' => true,
+    'filter'  => ['from' => $from, 'to' => $to],
+    'data'    => $cf,
+  ]);
+}
+
+// ---------------------------------------------------------
+// M) Employee Performance
+// GET reports/employee-performance?from_date=&to_date=
+// ---------------------------------------------------------
+if ($path === 'reports/employee-performance' && $method === 'GET') {
+  require_financial_permission($pdo, $auth);
+
+  $from  = $_GET['from_date'] ?? ($_GET['from'] ?? null);
+  $to    = $_GET['to_date']   ?? ($_GET['to']   ?? null);
+  $role  = strtolower((string)($auth['role'] ?? ''));
+  $myId  = (int)($auth['sub'] ?? $auth['uid'] ?? 0);
+
+  $dw = fin_date_where('p.created_at', $from, $to);
+  $payWhere = count($dw['conds'])
+    ? ("AND p.is_void=0 AND p.type='in' AND " . implode(' AND ', $dw['conds']))
+    : "AND p.is_void=0 AND p.type='in'";
+
+  $dwr = fin_date_where('r.created_at', $from, $to);
+  $rentWhere = count($dwr['conds'])
+    ? ('AND ' . implode(' AND ', $dwr['conds']))
+    : '';
+
+  $userFilter = ($role !== 'admin' && !has_permission($pdo, $auth, 'hr')) ? 'AND u.id = ' . $myId : '';
+
+  $sql = "SELECT
+    u.id AS user_id,
+    u.username,
+    u.role,
+    COUNT(DISTINCT p.id) AS receipts_count,
+    COALESCE(SUM(p.amount),0) AS total_collected,
+    COUNT(DISTINCT r.id) AS contracts_created,
+    COALESCE(SUM(DISTINCT r.total_amount),0) AS total_contract_value
+  FROM users u
+  LEFT JOIN payments p ON p.user_id=u.id $payWhere
+  LEFT JOIN rents r ON r.created_by=u.id $rentWhere
+  WHERE 1=1 $userFilter
+  GROUP BY u.id, u.username, u.role
+  ORDER BY total_collected DESC";
+
+  $params = array_merge($dw['params'], $dwr['params']);
+  $st = $pdo->prepare($sql);
+  $st->execute($params);
+  $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+  foreach ($rows as &$r) {
+    $collected = (float)$r['total_collected'];
+    $receipts  = (int)$r['receipts_count'];
+    $r['total_collected']     = round($collected, 2);
+    $r['total_contract_value'] = round((float)$r['total_contract_value'], 2);
+    $r['avg_transaction_value'] = $receipts > 0 ? round($collected / $receipts, 2) : 0.0;
+    $r['receipts_count']      = $receipts;
+    $r['contracts_created']   = (int)$r['contracts_created'];
+  }
+
+  respond(['success' => true, 'filter' => ['from' => $from, 'to' => $to], 'data' => $rows]);
+}
+
+// ---------------------------------------------------------
+// N) Revenue by User Summary
+// GET reports/revenue-by-user-summary?from_date=&to_date=
+// ---------------------------------------------------------
+if ($path === 'reports/revenue-by-user-summary' && $method === 'GET') {
+  require_financial_permission($pdo, $auth);
+
+  $from = $_GET['from_date'] ?? ($_GET['from'] ?? null);
+  $to   = $_GET['to_date']   ?? ($_GET['to']   ?? null);
+
+  $dw = fin_date_where('p.created_at', $from, $to);
+  $conds = array_merge(["p.type='in'", "p.is_void=0", "p.user_id IS NOT NULL"], $dw['conds']);
+  $where = 'WHERE ' . implode(' AND ', $conds);
+
+  $sql = "SELECT
+    u.id AS user_id,
+    u.username,
+    u.role,
+    COALESCE(SUM(CASE WHEN p.method='cash' THEN p.amount ELSE 0 END),0)     AS cash_collected,
+    COALESCE(SUM(CASE WHEN p.method='transfer' THEN p.amount ELSE 0 END),0) AS transfer_collected,
+    COALESCE(SUM(p.amount),0) AS total_receipts,
+    COUNT(p.id) AS transactions_count
+  FROM users u
+  JOIN payments p ON p.user_id=u.id
+  $where
+  GROUP BY u.id, u.username, u.role
+  ORDER BY total_receipts DESC";
+
+  $st = $pdo->prepare($sql);
+  $st->execute($dw['params']);
+  $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+  foreach ($rows as &$r) {
+    $r['cash_collected']      = round((float)$r['cash_collected'], 2);
+    $r['transfer_collected']  = round((float)$r['transfer_collected'], 2);
+    $r['total_receipts']      = round((float)$r['total_receipts'], 2);
+    $r['transactions_count']  = (int)$r['transactions_count'];
+  }
+
+  respond(['success' => true, 'filter' => ['from' => $from, 'to' => $to], 'data' => $rows]);
 }
 
 respond(["error" => "غير موجود"], 404);
