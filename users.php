@@ -12,11 +12,8 @@ $method = $_SERVER["REQUEST_METHOD"];
 */
 if ($path === "users" && $method === "GET") {
     $auth = require_auth();
-    if ($auth["role"] !== "admin") {
-        respond(["error" => "ممنوع"], 403);
-    }
-
     $pdo = db();
+    require_permission($pdo, $auth, 'user_management');
     ensure_financials_schema($pdo);
     $st = $pdo->query(
         "SELECT id, username, role, is_active, created_at, permissions_json FROM users ORDER BY id DESC"
@@ -40,7 +37,8 @@ if ($path === "users" && $method === "GET") {
 */
 if ($path === "users" && $method === "POST") {
     $auth = require_auth();
-    if ($auth["role"] !== "admin") respond(["error" => "ممنوع"], 403);
+    $pdo = db();
+    require_permission($pdo, $auth, 'user_management');
 
     $in = json_in();
     $username = trim((string)($in["username"] ?? ""));
@@ -51,8 +49,6 @@ if ($path === "users" && $method === "POST") {
     $permissions = array_merge_recursive_distinct($rawInput, $normalized);
 
     if ($username === "" || $password === "") respond(["error" => "حقول مفقودة"], 400);
-
-    $pdo = db();
     $check = $pdo->prepare("SELECT id FROM users WHERE username=?");
     $check->execute([$username]);
     if ($check->fetch()) respond(["error" => "اسم المستخدم موجود بالفعل"], 409);
@@ -62,8 +58,16 @@ if ($path === "users" && $method === "POST") {
     );
     $st->execute([$username, $password, $role, json_encode($permissions, JSON_UNESCAPED_UNICODE)]);
 
+    $newId = (int)$pdo->lastInsertId();
+    audit_log($pdo, 'user_created', 'user', $newId, null, [
+        'username' => $username,
+        'role' => $role,
+        'is_active' => 1,
+        'permissions' => $permissions
+    ]);
+
     respond([
-        "id" => (int)$pdo->lastInsertId(),
+        "id" => $newId,
         "username" => $username,
         "role" => $role,
         "is_active" => 1,
@@ -80,9 +84,17 @@ if ($path === "users" && $method === "POST") {
 */
 if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "PUT") {
     $auth = require_auth();
-    if ($auth["role"] !== "admin") respond(["error" => "ممنوع"], 403);
+    $pdo = db();
+    require_permission($pdo, $auth, 'user_management');
 
     $id = (int)$m[1];
+    
+    // Fetch old values for audit comparison
+    $oldUserSt = $pdo->prepare("SELECT username, role, is_active, permissions_json FROM users WHERE id=?");
+    $oldUserSt->execute([$id]);
+    $oldUser = $oldUserSt->fetch(PDO::FETCH_ASSOC);
+    if (!$oldUser) respond(["error" => "المستخدم غير موجود"], 404);
+
     $in = json_in();
 
     $loggedInUserId = (int)($auth["sub"] ?? $auth["uid"] ?? 0);
@@ -109,7 +121,6 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "PUT") {
         $values[] = (int)$in["is_active"];
     }
 
-    $pdo = db();
     ensure_financials_schema($pdo);
 
     $nextRole = (string)($in['role'] ?? '');
@@ -153,6 +164,54 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "PUT") {
         $data['screen_permissions'] = (object)($data['permissions']['screen_permissions'] ?? []);
     }
 
+    // Compare and log audit trail changes
+    $newUsername = isset($in['username']) ? trim($in['username']) : $oldUser['username'];
+    $newRole = isset($in['role']) ? trim($in['role']) : $oldUser['role'];
+    $newIsActive = isset($in['is_active']) ? (int)$in['is_active'] : (int)$oldUser['is_active'];
+    
+    $oldPermsDecoded = json_decode($oldUser['permissions_json'] ?? '{}', true) ?: [];
+    $oldPermissions = normalize_user_permissions($oldPermsDecoded, $oldUser['role']);
+    $newPermissions = isset($finalPerms) ? $finalPerms : $oldPermsDecoded;
+
+    $changedOld = [];
+    $changedNew = [];
+
+    if ($newUsername !== $oldUser['username']) {
+        $changedOld['username'] = $oldUser['username'];
+        $changedNew['username'] = $newUsername;
+    }
+    if ($newRole !== $oldUser['role']) {
+        $changedOld['role'] = $oldUser['role'];
+        $changedNew['role'] = $newRole;
+    }
+    if ($newIsActive !== (int)$oldUser['is_active']) {
+        $changedOld['is_active'] = (int)$oldUser['is_active'];
+        $changedNew['is_active'] = $newIsActive;
+    }
+    if (json_encode($newPermissions) !== json_encode($oldPermsDecoded)) {
+        $changedOld['permissions'] = $oldPermsDecoded;
+        $changedNew['permissions'] = $newPermissions;
+    }
+
+    if (!empty($changedOld)) {
+        if (isset($changedOld['role'])) {
+            audit_log($pdo, 'role_changed', 'user', $id, ['role' => $oldUser['role']], ['role' => $newRole]);
+        }
+        if (isset($changedOld['permissions'])) {
+            $oldScreen = $oldPermissions['screen_permissions'] ?? [];
+            $newScreen = normalize_user_permissions($newPermissions, $newRole)['screen_permissions'] ?? [];
+            if (json_encode($oldScreen) !== json_encode($newScreen)) {
+                audit_log($pdo, 'permissions_changed', 'user', $id, ['screen_permissions' => $oldScreen], ['screen_permissions' => $newScreen]);
+            }
+        }
+        if (isset($changedOld['is_active'])) {
+            $action = $newIsActive === 1 ? 'user_activated' : 'user_deactivated';
+            audit_log($pdo, $action, 'user', $id, ['is_active' => (int)$oldUser['is_active']], ['is_active' => $newIsActive]);
+        }
+        
+        audit_log($pdo, 'user_updated', 'user', $id, $changedOld, $changedNew);
+    }
+
     respond($data, 200);
 }
 
@@ -163,7 +222,8 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "PUT") {
 */
 if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "DELETE") {
     $auth = require_auth();
-    if ($auth["role"] !== "admin") respond(["error" => "ممنوع"], 403);
+    $pdo = db();
+    require_permission($pdo, $auth, 'user_management');
 
     $id = (int)$m[1];
     $loggedInUserId = (int)($auth["sub"] ?? $auth["uid"] ?? 0);
@@ -171,9 +231,17 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "DELETE") {
         respond(["error" => "لا يمكنك حذف حسابك الخاص كمدير"], 400);
     }
 
-    $pdo = db();
+    // Fetch details before delete
+    $oldUserSt = $pdo->prepare("SELECT username, role, is_active FROM users WHERE id=?");
+    $oldUserSt->execute([$id]);
+    $oldUser = $oldUserSt->fetch(PDO::FETCH_ASSOC);
+
     $st = $pdo->prepare("DELETE FROM users WHERE id=?");
     $st->execute([$id]);
+
+    if ($oldUser) {
+        audit_log($pdo, 'user_deleted', 'user', $id, $oldUser, null);
+    }
 
     respond(["message" => "تم حذف المستخدم"], 200);
 }

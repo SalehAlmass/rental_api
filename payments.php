@@ -82,6 +82,25 @@ function fetch_client(PDO $pdo, int $client_id) {
 
 // GET /payments
 if ($path === "payments" && $method === "GET") {
+  $hasPayments = false;
+  $hasReceipts = false;
+  if (strtolower($auth['role'] ?? '') === 'admin') {
+    $hasPayments = true;
+    $hasReceipts = true;
+  } else {
+    $stPerm = $pdo->prepare("SELECT role, permissions_json FROM users WHERE id = ?");
+    $stPerm->execute([$uid]);
+    $uRow = $stPerm->fetch(PDO::FETCH_ASSOC);
+    if ($uRow) {
+      $uPerms = normalize_user_permissions($uRow['permissions_json'] ?? null, $uRow['role'] ?? 'employee');
+      $hasPayments = has_permission($pdo, $auth, 'payments');
+      $hasReceipts = has_permission($pdo, $auth, 'receipts');
+    }
+  }
+  if (!$hasPayments && !$hasReceipts) {
+    respond(["error" => "لا تملك الصلاحية الكافية"], 403);
+  }
+
   $show_void = isset($_GET["show_void"]) ? (int)$_GET["show_void"] : 0;
   $from = $_GET['from'] ?? null; // yyyy-mm-dd
   $to   = $_GET['to'] ?? null;   // yyyy-mm-dd
@@ -92,6 +111,10 @@ if ($path === "payments" && $method === "GET") {
   // بناء شروط البحث
   $conds = [];
   $params = [];
+
+  if (!$hasPayments && $hasReceipts) {
+    $conds[] = "p.type = 'in'";
+  }
 
   if (!$show_void) {
     $conds[] = "p.is_void = 0";
@@ -147,6 +170,12 @@ if ($path === "payments" && $method === "POST") {
   if (!$in) $in = $_POST;
 
   $type   = trim((string)($in["type"] ?? ""));
+  if ($type === 'in') {
+    require_permission($pdo, $auth, 'receipts');
+  } else {
+    require_permission($pdo, $auth, 'payments');
+  }
+
   $amount = (float)($in["amount"] ?? 0);
 
   if (!in_array($type, ["in","out","depreciation"], true)) respond(["error"=>"نوع السند غير صالح. يجب أن يكون وارد أو صادر أو إهلاك"], 400);
@@ -304,6 +333,24 @@ if (preg_match('#^payments/(\\d+)$#', $path, $m) && $method === "PUT") {
   $pay = $st->fetch();
   if (!$pay) respond(["error" => "السند غير موجود"], 404);
 
+  // Check permission for existing type
+  $existingType = trim((string)($pay["type"] ?? ""));
+  if ($existingType === 'in') {
+    require_permission($pdo, $auth, 'receipts');
+  } else {
+    require_permission($pdo, $auth, 'payments');
+  }
+
+  // Check permission for new type if updated
+  $newType = isset($in["type"]) ? trim((string)$in["type"]) : $existingType;
+  if ($newType !== $existingType) {
+    if ($newType === 'in') {
+      require_permission($pdo, $auth, 'receipts');
+    } else {
+      require_permission($pdo, $auth, 'payments');
+    }
+  }
+
   if ((int)$pay["is_void"] === 1) {
     respond(["error" => "لا يمكن تعديل سند ملغى"], 409);
   }
@@ -365,12 +412,60 @@ if (preg_match('#^payments/(\\d+)$#', $path, $m) && $method === "PUT") {
     if (!fetch_client($pdo, $client_id)) respond(["error" => "العميل غير موجود"], 404);
   }
 
-  $upd = $pdo->prepare("UPDATE payments
-                        SET type=?, amount=?, client_id=?, rent_id=?, equipment_id=?, method=?, reference_no=?, notes=?
-                        WHERE id=?");
-  $upd->execute([$type, $amount, $client_id, $rent_id, $equipment_id, $methodPay, $ref, $notes, $id]);
+  // Audit comparisons
+  $oldValues = [
+    'type' => $pay['type'],
+    'amount' => (float)$pay['amount'],
+    'client_id' => $pay['client_id'] !== null ? (int)$pay['client_id'] : null,
+    'rent_id' => $pay['rent_id'] !== null ? (int)$pay['rent_id'] : null,
+    'equipment_id' => $pay['equipment_id'] !== null ? (int)$pay['equipment_id'] : null,
+    'method' => $pay['method'],
+    'reference_no' => $pay['reference_no'],
+    'notes' => $pay['notes']
+  ];
 
-  respond(["ok" => true]);
+  $newValues = [
+    'type' => $type,
+    'amount' => $amount,
+    'client_id' => $client_id,
+    'rent_id' => $rent_id,
+    'equipment_id' => $equipment_id,
+    'method' => $methodPay,
+    'reference_no' => $ref,
+    'notes' => $notes
+  ];
+
+  $changedOld = [];
+  $changedNew = [];
+  foreach ($oldValues as $kKey => $val) {
+    if ($newValues[$kKey] !== $val) {
+      $changedOld[$kKey] = $val;
+      $changedNew[$kKey] = $newValues[$kKey];
+    }
+  }
+
+  $pdo->beginTransaction();
+  try {
+    $upd = $pdo->prepare("UPDATE payments
+                          SET type=?, amount=?, client_id=?, rent_id=?, equipment_id=?, method=?, reference_no=?, notes=?
+                          WHERE id=?");
+    $upd->execute([$type, $amount, $client_id, $rent_id, $equipment_id, $methodPay, $ref, $notes, $id]);
+
+    $oldRentId = $pay['rent_id'] !== null ? (int)$pay['rent_id'] : 0;
+    $newRentId = $rent_id !== null ? (int)$rent_id : 0;
+    if ($oldRentId > 0) recalc_rent_financials($pdo, $oldRentId);
+    if ($newRentId > 0 && $newRentId !== $oldRentId) recalc_rent_financials($pdo, $newRentId);
+
+    if (!empty($changedOld)) {
+      audit_log($pdo, 'payment_updated', 'payment', $id, $changedOld, $changedNew);
+    }
+
+    $pdo->commit();
+    respond(["ok" => true]);
+  } catch (Throwable $e) {
+    if ($pdo->inTransaction()) $pdo->rollBack();
+    respond(["error" => "خطأ في الخادم", "details" => $e->getMessage()], 500);
+  }
 }
 
 // POST /payments/{id}/void
@@ -383,6 +478,13 @@ if (preg_match('#^payments/(\\d+)/void$#', $path, $m) && $method === "POST") {
   $st->execute([$id]);
   $pay = $st->fetch();
   if (!$pay) respond(["error" => "السند غير موجود"], 404);
+
+  $existingType = trim((string)($pay["type"] ?? ""));
+  if ($existingType === 'in') {
+    require_permission($pdo, $auth, 'receipts');
+  } else {
+    require_permission($pdo, $auth, 'payments');
+  }
 
   if ((int)$pay["is_void"] === 1) {
     respond(["error" => "السند ملغى بالفعل"], 409);

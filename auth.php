@@ -222,9 +222,8 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "DELETE") {
 */
 if ($path === "auth/register" && $method === "POST") {
   $auth = require_auth();
-  if (($auth['role'] ?? '') !== 'admin') {
-    respond(["error" => "ممنوع"], 403);
-  }
+  $pdo = db();
+  require_permission($pdo, $auth, 'user_management');
 
   $in = json_in();
   $username = trim((string)($in["username"] ?? ""));
@@ -236,7 +235,6 @@ if ($path === "auth/register" && $method === "POST") {
     respond(["error" => "حقول مفقودة"], 400);
   }
 
-  $pdo = db();
   ensure_financials_schema($pdo);
   $check = $pdo->prepare("SELECT id FROM users WHERE username=?");
   $check->execute([$username]);
@@ -250,8 +248,16 @@ if ($path === "auth/register" && $method === "POST") {
   );
   $st->execute([$username, $password, $role, json_encode($permissions, JSON_UNESCAPED_UNICODE)]);
 
+  $newId = (int)$pdo->lastInsertId();
+  audit_log($pdo, 'user_created', 'user', $newId, null, [
+      'username' => $username,
+      'role' => $role,
+      'is_active' => 1,
+      'permissions' => $permissions
+  ]);
+
   respond([
-    "id" => (int)$pdo->lastInsertId(),
+    "id" => $newId,
     "username" => $username,
     "role" => $role,
     "is_active" => 1,

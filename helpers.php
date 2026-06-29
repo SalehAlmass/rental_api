@@ -90,6 +90,9 @@ function ensure_financials_schema(PDO $pdo): void {
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
+  ensure_column($pdo, 'audit_logs', 'old_values', "ALTER TABLE audit_logs ADD COLUMN old_values JSON NULL AFTER entity_id");
+  ensure_column($pdo, 'audit_logs', 'new_values', "ALTER TABLE audit_logs ADD COLUMN new_values JSON NULL AFTER old_values");
+
   // rent_items: multiple equipment per rent
   ensure_table($pdo, 'rent_items', "CREATE TABLE rent_items (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -159,6 +162,8 @@ function ensure_performance_indexes(PDO $pdo): void {
   ensure_index($pdo, 'audit_logs', 'idx_audit_logs_user_id', "CREATE INDEX idx_audit_logs_user_id ON audit_logs (user_id)");
   ensure_index($pdo, 'audit_logs', 'idx_audit_logs_created_at', "CREATE INDEX idx_audit_logs_created_at ON audit_logs (created_at)");
   ensure_index($pdo, 'audit_logs', 'idx_audit_logs_entity_id', "CREATE INDEX idx_audit_logs_entity_id ON audit_logs (entity, entity_id)");
+  ensure_index($pdo, 'audit_logs', 'idx_audit_logs_entity', "CREATE INDEX idx_audit_logs_entity ON audit_logs (entity)");
+  ensure_index($pdo, 'audit_logs', 'idx_audit_logs_action', "CREATE INDEX idx_audit_logs_action ON audit_logs (action)");
 
   // 4. clients indexes
   ensure_index($pdo, 'clients', 'idx_clients_phone', "CREATE INDEX idx_clients_phone ON clients (phone)");
@@ -166,7 +171,15 @@ function ensure_performance_indexes(PDO $pdo): void {
   ensure_index($pdo, 'clients', 'idx_clients_name', "CREATE INDEX idx_clients_name ON clients (name)");
 }
 
-function audit_log(PDO $pdo, string $action, ?string $entity = null, ?int $entityId = null, array $meta = []): void {
+function audit_log(
+  PDO $pdo,
+  string $action,
+  ?string $entity = null,
+  ?int $entityId = null,
+  ?array $oldValues = null,
+  ?array $newValues = null,
+  array $meta = []
+): void {
   $userId = null;
   try {
     if (function_exists('auth_user')) {
@@ -177,14 +190,38 @@ function audit_log(PDO $pdo, string $action, ?string $entity = null, ?int $entit
     $userId = null;
   }
 
-  $st = $pdo->prepare("INSERT INTO audit_logs (user_id, action, entity, entity_id, meta)
-                       VALUES (?,?,?,?,?)");
+  // Sensitive data protection: redact passwords, password hashes, tokens, auth secrets
+  $sensitiveKeys = ['password', 'password_hash', 'token', 'auth_secret', 'secret'];
+  $redact = function($arr) use (&$redact, $sensitiveKeys) {
+    if ($arr === null) return null;
+    if (!is_array($arr)) return $arr;
+    $res = [];
+    foreach ($arr as $key => $val) {
+      if (in_array(strtolower((string)$key), $sensitiveKeys, true)) {
+        $res[$key] = '[REDACTED]';
+      } elseif (is_array($val)) {
+        $res[$key] = $redact($val);
+      } else {
+        $res[$key] = $val;
+      }
+    }
+    return $res;
+  };
+
+  $oldValuesRedacted = $redact($oldValues);
+  $newValuesRedacted = $redact($newValues);
+  $metaRedacted = $redact($meta) ?: [];
+
+  $st = $pdo->prepare("INSERT INTO audit_logs (user_id, action, entity, entity_id, old_values, new_values, meta)
+                       VALUES (?,?,?,?,?,?,?)");
   $st->execute([
     $userId,
     $action,
     $entity,
     $entityId,
-    empty($meta) ? null : json_encode($meta, JSON_UNESCAPED_UNICODE)
+    $oldValuesRedacted !== null ? json_encode($oldValuesRedacted, JSON_UNESCAPED_UNICODE) : null,
+    $newValuesRedacted !== null ? json_encode($newValuesRedacted, JSON_UNESCAPED_UNICODE) : null,
+    empty($metaRedacted) ? null : json_encode($metaRedacted, JSON_UNESCAPED_UNICODE)
   ]);
 }
 
@@ -318,21 +355,48 @@ function normalize_user_permissions($raw, ?string $role = null): array
     $receiptMode = $defaults['contract_payment_receipt_mode'];
   }
 
+  // Default values for screen permissions based on role
+  $screenDefaults = [];
+  if (strtolower((string)$role) === 'admin') {
+    $screenDefaults = [
+      'dashboard' => true, 'rents' => true, 'clients' => true, 'equipment' => true,
+      'payments' => true, 'receipts' => true, 'reports' => true, 'hr' => true,
+      'attendance' => true, 'shifts' => true, 'backup' => true, 'settings' => true,
+      'user_management' => true, 'print' => true, 'export' => true, 'audit_logs' => true
+    ];
+  } elseif (strtolower((string)$role) === 'manager') {
+    $screenDefaults = [
+      'dashboard' => true, 'rents' => true, 'clients' => true, 'equipment' => true,
+      'payments' => true, 'receipts' => true, 'reports' => true, 'hr' => true,
+      'attendance' => true, 'shifts' => true, 'backup' => true, 'settings' => true,
+      'user_management' => false, 'print' => true, 'export' => true, 'audit_logs' => false
+    ];
+  } else { // employee
+    $screenDefaults = [
+      'dashboard' => true, 'rents' => true, 'clients' => true, 'equipment' => true,
+      'payments' => true, 'receipts' => true, 'reports' => false, 'hr' => false,
+      'attendance' => true, 'shifts' => true, 'backup' => false, 'settings' => false,
+      'user_management' => false, 'print' => true, 'export' => true, 'audit_logs' => false
+    ];
+  }
+
   $screenPermissions = [];
-  if (isset($raw['screen_permissions']) && is_array($raw['screen_permissions'])) {
-    foreach ($raw['screen_permissions'] as $k => $v) {
-      $screenPermissions[trim((string)$k)] = (bool)$v;
+  $rawScreen = $raw['screen_permissions'] ?? null;
+  if (is_array($rawScreen)) {
+    foreach ($screenDefaults as $k => $defVal) {
+      if (array_key_exists($k, $rawScreen)) {
+        $screenPermissions[$k] = filter_var($rawScreen[$k], FILTER_VALIDATE_BOOLEAN);
+      } else {
+        $screenPermissions[$k] = $defVal;
+      }
     }
   } else {
-    // Legacy fallback: check if screen permission keys exist at the root level of raw permissions
-    $legacyKeys = [
-      'dashboard', 'rents', 'clients', 'equipment', 'payments',
-      'receipts', 'reports', 'hr', 'attendance', 'shifts',
-      'backup', 'settings', 'user_management', 'print', 'export'
-    ];
-    foreach ($legacyKeys as $k) {
-      if (isset($raw[$k])) {
-        $screenPermissions[$k] = (bool)$raw[$k];
+    // Fallback to legacy/root keys first, or default if missing
+    foreach ($screenDefaults as $k => $defVal) {
+      if (array_key_exists($k, $raw)) {
+        $screenPermissions[$k] = filter_var($raw[$k], FILTER_VALIDATE_BOOLEAN);
+      } else {
+        $screenPermissions[$k] = $defVal;
       }
     }
   }
@@ -421,10 +485,25 @@ function ensure_depreciation_schema(PDO $pdo): void
     accounting_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
     operational_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
     voucher_payment_id INT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uniq_equipment_dep_month (equipment_id, depreciation_month),
-    INDEX idx_equipment_dep_month (depreciation_month)
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+  ensure_column($pdo, 'equipment_depreciation_entries', 'depreciation_type', "ALTER TABLE equipment_depreciation_entries ADD COLUMN depreciation_type VARCHAR(20) NOT NULL DEFAULT 'accounting' AFTER depreciation_month");
+  ensure_column($pdo, 'equipment_depreciation_entries', 'amount', "ALTER TABLE equipment_depreciation_entries ADD COLUMN amount DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER depreciation_type");
+  ensure_column($pdo, 'equipment_depreciation_entries', 'accum_before', "ALTER TABLE equipment_depreciation_entries ADD COLUMN accum_before DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER amount");
+  ensure_column($pdo, 'equipment_depreciation_entries', 'accum_after', "ALTER TABLE equipment_depreciation_entries ADD COLUMN accum_after DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER accum_before");
+  ensure_column($pdo, 'equipment_depreciation_entries', 'book_before', "ALTER TABLE equipment_depreciation_entries ADD COLUMN book_before DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER accum_after");
+  ensure_column($pdo, 'equipment_depreciation_entries', 'book_after', "ALTER TABLE equipment_depreciation_entries ADD COLUMN book_after DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER book_before");
+
+  // Modify indexes dynamically
+  try {
+    $pdo->exec("ALTER TABLE equipment_depreciation_entries DROP INDEX uniq_equipment_dep_month");
+  } catch (Throwable $e) {}
+
+  ensure_index($pdo, 'equipment_depreciation_entries', 'uniq_equipment_dep_month_type', "CREATE UNIQUE INDEX uniq_equipment_dep_month_type ON equipment_depreciation_entries (equipment_id, depreciation_month, depreciation_type)");
+  ensure_index($pdo, 'equipment_depreciation_entries', 'idx_equipment_dep_entries_equipment_id', "CREATE INDEX idx_equipment_dep_entries_equipment_id ON equipment_depreciation_entries (equipment_id)");
+  ensure_index($pdo, 'equipment_depreciation_entries', 'idx_equipment_dep_entries_depreciation_month', "CREATE INDEX idx_equipment_dep_entries_depreciation_month ON equipment_depreciation_entries (depreciation_month)");
+  ensure_index($pdo, 'equipment_depreciation_entries', 'idx_equipment_dep_entries_depreciation_type', "CREATE INDEX idx_equipment_dep_entries_depreciation_type ON equipment_depreciation_entries (depreciation_type)");
 }
 
 function depreciation_compute_values(array $row): array
@@ -478,13 +557,6 @@ function process_monthly_depreciation(PDO $pdo): void
       continue;
     }
 
-    $chk = $pdo->prepare("SELECT id FROM equipment_depreciation_entries WHERE equipment_id=? AND depreciation_month=? LIMIT 1");
-    $chk->execute([$equipmentId, $month]);
-    if ($chk->fetchColumn()) {
-      update_equipment_depreciation_snapshot($pdo, $equipmentId);
-      continue;
-    }
-
     $vals = depreciation_compute_values($row);
     $accountingAmount = (float)$vals['depreciation_monthly'];
 
@@ -497,10 +569,13 @@ function process_monthly_depreciation(PDO $pdo): void
     $daysUsed = (int)$stDays->fetchColumn();
     $operationalAmount = round($daysUsed * (float)$vals['operational_depreciation_per_day'], 2);
 
-    $pdo->beginTransaction();
-    try {
-      $paymentId = null;
-      if ($accountingAmount > 0.0001) {
+    // 1. Process Accounting Depreciation
+    $chkAcc = $pdo->prepare("SELECT id FROM equipment_depreciation_entries WHERE equipment_id=? AND depreciation_month=? AND depreciation_type='accounting' LIMIT 1");
+    $chkAcc->execute([$equipmentId, $month]);
+    if (!$chkAcc->fetchColumn() && $accountingAmount > 0.0001) {
+      $pdo->beginTransaction();
+      try {
+        $paymentId = null;
         $idem = 'dep_' . $equipmentId . '_' . $month;
         $stPay = $pdo->prepare("SELECT id FROM payments WHERE idempotency_key=? LIMIT 1");
         $stPay->execute([$idem]);
@@ -517,21 +592,88 @@ function process_monthly_depreciation(PDO $pdo): void
           ]);
           $paymentId = (int)$pdo->lastInsertId();
         }
+
+        $accumBefore = (float)($row['depreciation_accumulated'] ?? 0);
+        $accumAfter = min($accumBefore + $accountingAmount, max((float)$vals['purchase_price'] - (float)$vals['salvage_value'], 0.0));
+        $bookBefore = (float)($row['book_value'] ?? $vals['purchase_price']);
+        $bookAfter = max((float)$vals['purchase_price'] - $accumAfter, (float)$vals['salvage_value'], 0.0);
+
+        $ins = $pdo->prepare("INSERT INTO equipment_depreciation_entries 
+          (equipment_id, depreciation_month, depreciation_type, amount, accum_before, accum_after, book_before, book_after, accounting_amount, operational_amount, voucher_payment_id)
+          VALUES (?, ?, 'accounting', ?, ?, ?, ?, ?, ?, 0, ?)");
+        $ins->execute([
+          $equipmentId, $month, $accountingAmount, 
+          $accumBefore, $accumAfter, $bookBefore, $bookAfter,
+          $accountingAmount, $paymentId ?: null
+        ]);
+
+        $upd = $pdo->prepare("UPDATE equipment SET depreciation_accumulated=?, book_value=?, last_depreciation_month=? WHERE id=?");
+        $upd->execute([round($accumAfter, 2), round($bookAfter, 2), $month, $equipmentId]);
+
+        $pdo->commit();
+
+        audit_log($pdo, 'depreciation_generated', 'equipment', $equipmentId, null, null, [
+          'depreciation_type' => 'accounting',
+          'amount' => $accountingAmount,
+          'period' => $month
+        ]);
+      } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        audit_log($pdo, 'depreciation_error', 'equipment', $equipmentId, null, null, [
+          'depreciation_type' => 'accounting',
+          'error' => $e->getMessage(),
+          'period' => $month
+        ]);
       }
-
-      $ins = $pdo->prepare("INSERT INTO equipment_depreciation_entries (equipment_id, depreciation_month, accounting_amount, operational_amount, voucher_payment_id)
-                            VALUES (?,?,?,?,?)");
-      $ins->execute([$equipmentId, $month, $accountingAmount, $operationalAmount, $paymentId ?: null]);
-
-      $newAccum = min((float)($row['depreciation_accumulated'] ?? 0) + $accountingAmount, max((float)$vals['purchase_price'] - (float)$vals['salvage_value'], 0.0));
-      $newOperationalAccum = (float)($row['operational_depreciation_accumulated'] ?? 0) + $operationalAmount;
-      $newBook = max((float)$vals['purchase_price'] - $newAccum, (float)$vals['salvage_value'], 0.0);
-      $upd = $pdo->prepare("UPDATE equipment SET depreciation_monthly=?, operational_depreciation_per_day=?, depreciation_accumulated=?, operational_depreciation_accumulated=?, book_value=?, last_depreciation_month=? WHERE id=?");
-      $upd->execute([$vals['depreciation_monthly'], $vals['operational_depreciation_per_day'], round($newAccum,2), round($newOperationalAccum,2), round($newBook,2), $month, $equipmentId]);
-      $pdo->commit();
-    } catch (Throwable $e) {
-      if ($pdo->inTransaction()) $pdo->rollBack();
     }
+
+    // Reload row to get updated book values before running operational
+    $stRow = $pdo->prepare("SELECT * FROM equipment WHERE id=? LIMIT 1");
+    $stRow->execute([$equipmentId]);
+    $row = $stRow->fetch(PDO::FETCH_ASSOC);
+
+    // 2. Process Operational Depreciation
+    $chkOp = $pdo->prepare("SELECT id FROM equipment_depreciation_entries WHERE equipment_id=? AND depreciation_month=? AND depreciation_type='operational' LIMIT 1");
+    $chkOp->execute([$equipmentId, $month]);
+    if (!$chkOp->fetchColumn() && $operationalAmount > 0.0001) {
+      $pdo->beginTransaction();
+      try {
+        $accumBefore = (float)($row['operational_depreciation_accumulated'] ?? 0);
+        $accumAfter = $accumBefore + $operationalAmount;
+        $bookBefore = (float)($row['book_value'] ?? $vals['purchase_price']);
+        $bookAfter = $bookBefore; 
+
+        $ins = $pdo->prepare("INSERT INTO equipment_depreciation_entries 
+          (equipment_id, depreciation_month, depreciation_type, amount, accum_before, accum_after, book_before, book_after, accounting_amount, operational_amount, voucher_payment_id)
+          VALUES (?, ?, 'operational', ?, ?, ?, ?, ?, 0, ?, NULL)");
+        $ins->execute([
+          $equipmentId, $month, $operationalAmount,
+          $accumBefore, $accumAfter, $bookBefore, $bookAfter,
+          $operationalAmount
+        ]);
+
+        $upd = $pdo->prepare("UPDATE equipment SET operational_depreciation_accumulated=?, last_depreciation_month=? WHERE id=?");
+        $upd->execute([round($accumAfter, 2), $month, $equipmentId]);
+
+        $pdo->commit();
+
+        audit_log($pdo, 'depreciation_generated', 'equipment', $equipmentId, null, null, [
+          'depreciation_type' => 'operational',
+          'amount' => $operationalAmount,
+          'period' => $month
+        ]);
+      } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        audit_log($pdo, 'depreciation_error', 'equipment', $equipmentId, null, null, [
+          'depreciation_type' => 'operational',
+          'error' => $e->getMessage(),
+          'period' => $month
+        ]);
+      }
+    }
+
+    // Sync latest calculated book_value and per-day values to snapshot columns
+    update_equipment_depreciation_snapshot($pdo, $equipmentId);
   }
 }
 

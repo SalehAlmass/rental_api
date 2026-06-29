@@ -325,6 +325,7 @@ if ($path === "settings/team-monitoring" && $method === "GET") {
 |--------------------------------------------------------------------------
 */
 if ($path === "settings/contract-closing" && $method === "GET") {
+  require_permission($pdo, $auth, 'settings');
   try {
     $st = $pdo->query("SELECT * FROM system_settings WHERE setting_key LIKE 'closing_%' ORDER BY id");
     $rows = $st->fetchAll(PDO::FETCH_ASSOC);
@@ -339,6 +340,7 @@ if ($path === "settings/contract-closing" && $method === "GET") {
 }
 
 if ($path === "settings/contract-closing" && $method === "PUT") {
+  require_permission($pdo, $auth, 'settings');
   $in = json_in();
   try {
     // Ensure system_settings table exists
@@ -349,11 +351,31 @@ if ($path === "settings/contract-closing" && $method === "PUT") {
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
+    // Fetch existing settings before updates
+    $stOld = $pdo->query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key LIKE 'closing_%'");
+    $oldSettings = [];
+    foreach ($stOld->fetchAll(PDO::FETCH_ASSOC) as $r) {
+      $oldSettings[$r['setting_key']] = $r['setting_value'];
+    }
+
+    $changedOld = [];
+    $changedNew = [];
+
     foreach ($in as $key => $value) {
       if (!str_starts_with($key, 'closing_')) continue;
+      $oldVal = $oldSettings[$key] ?? null;
+      $newVal = (string)$value;
+      if ($oldVal !== $newVal) {
+        $changedOld[$key] = $oldVal;
+        $changedNew[$key] = $newVal;
+      }
       $st = $pdo->prepare("INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?)
                            ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
-      $st->execute([$key, (string)$value]);
+      $st->execute([$key, $newVal]);
+    }
+
+    if (!empty($changedOld) || !empty($changedNew)) {
+      audit_log($pdo, 'contract_closing_settings_updated', 'settings', null, $changedOld, $changedNew);
     }
     respond(["success" => true, "ok" => true]);
   } catch (Throwable $e) {
