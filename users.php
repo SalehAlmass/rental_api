@@ -26,6 +26,7 @@ if ($path === "users" && $method === "GET") {
         $u['id'] = (int)$u['id'];
         $u['is_active'] = (int)$u['is_active'];
         $u['permissions'] = normalize_user_permissions($u['permissions_json'] ?? null, (string)($u['role'] ?? 'employee'));
+        $u['screen_permissions'] = (object)($u['permissions']['screen_permissions'] ?? []);
         return $u;
     }, $st->fetchAll(PDO::FETCH_ASSOC));
 
@@ -45,7 +46,9 @@ if ($path === "users" && $method === "POST") {
     $username = trim((string)($in["username"] ?? ""));
     $password = trim((string)($in["password"] ?? ""));
     $role = trim((string)($in["role"] ?? "employee"));
-    $permissions = normalize_user_permissions($in['permissions'] ?? null, $role);
+    $rawInput = isset($in['permissions']) && is_array($in['permissions']) ? $in['permissions'] : [];
+    $normalized = normalize_user_permissions($rawInput, $role);
+    $permissions = array_merge_recursive_distinct($rawInput, $normalized);
 
     if ($username === "" || $password === "") respond(["error" => "حقول مفقودة"], 400);
 
@@ -65,6 +68,7 @@ if ($path === "users" && $method === "POST") {
         "role" => $role,
         "is_active" => 1,
         "permissions" => $permissions,
+        "screen_permissions" => (object)($permissions['screen_permissions'] ?? []),
         "created_at" => date("Y-m-d H:i:s")
     ], 201);
 }
@@ -80,6 +84,16 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "PUT") {
 
     $id = (int)$m[1];
     $in = json_in();
+
+    $loggedInUserId = (int)($auth["sub"] ?? $auth["uid"] ?? 0);
+    if ($id === $loggedInUserId) {
+        if (isset($in["is_active"]) && (int)$in["is_active"] !== 1) {
+            respond(["error" => "لا يمكنك تعطيل حسابك الخاص كمدير"], 400);
+        }
+        if (isset($in["role"]) && $in["role"] !== "admin") {
+            respond(["error" => "لا يمكنك تغيير دورك الخاص كمدير لتجنب فقدان الوصول الكامل"], 400);
+        }
+    }
 
     $fields = [];
     $values = [];
@@ -105,8 +119,21 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "PUT") {
         $nextRole = (string)($currentRoleSt->fetchColumn() ?: 'employee');
     }
     if (array_key_exists('permissions', $in)) {
+        $existingSt = $pdo->prepare("SELECT permissions_json FROM users WHERE id=?");
+        $existingSt->execute([$id]);
+        $existingJson = $existingSt->fetchColumn();
+        $existingPerms = [];
+        if ($existingJson) {
+            $existingPerms = json_decode($existingJson, true) ?: [];
+        }
+
+        $rawInput = is_array($in['permissions']) ? $in['permissions'] : [];
+        $merged = array_merge_recursive_distinct($existingPerms, $rawInput);
+        $normalized = normalize_user_permissions($merged, $nextRole);
+        $finalPerms = array_merge_recursive_distinct($merged, $normalized);
+
         $fields[] = "permissions_json=?";
-        $values[] = json_encode(normalize_user_permissions($in['permissions'], $nextRole), JSON_UNESCAPED_UNICODE);
+        $values[] = json_encode($finalPerms, JSON_UNESCAPED_UNICODE);
     }
 
     if (!$fields) respond(["error" => "لا شيء للتحديث"], 400);
@@ -123,6 +150,7 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "PUT") {
         $data['id'] = (int)$data['id'];
         $data['is_active'] = (int)$data['is_active'];
         $data['permissions'] = normalize_user_permissions($data['permissions_json'] ?? null, (string)($data['role'] ?? 'employee'));
+        $data['screen_permissions'] = (object)($data['permissions']['screen_permissions'] ?? []);
     }
 
     respond($data, 200);
@@ -138,6 +166,11 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "DELETE") {
     if ($auth["role"] !== "admin") respond(["error" => "ممنوع"], 403);
 
     $id = (int)$m[1];
+    $loggedInUserId = (int)($auth["sub"] ?? $auth["uid"] ?? 0);
+    if ($id === $loggedInUserId) {
+        respond(["error" => "لا يمكنك حذف حسابك الخاص كمدير"], 400);
+    }
+
     $pdo = db();
     $st = $pdo->prepare("DELETE FROM users WHERE id=?");
     $st->execute([$id]);

@@ -76,6 +76,7 @@ if ($path === "auth/profile" && $method === "GET") {
   $u['is_active'] = (int)$u['is_active'];
   $u['permissions'] = normalize_user_permissions($u['permissions_json'] ?? null, (string)($u['role'] ?? 'employee'));
   $u = array_merge($u, effective_contract_closing_modes($pdo, $u));
+  $u['screen_permissions'] = (object)($u['permissions']['screen_permissions'] ?? []);
 
   respond($u, 200);
 }
@@ -255,6 +256,7 @@ if ($path === "auth/register" && $method === "POST") {
     "role" => $role,
     "is_active" => 1,
     "permissions" => $permissions,
+    "screen_permissions" => (object)($permissions['screen_permissions'] ?? []),
     "created_at" => date("Y-m-d H:i:s")
   ], 201);
 }

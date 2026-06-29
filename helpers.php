@@ -77,6 +77,7 @@ function ensure_financials_schema(PDO $pdo): void {
   ensure_column($pdo, 'payments', 'idempotency_key', "ALTER TABLE payments ADD COLUMN idempotency_key VARCHAR(80) NULL");
   // unique when key present (same key cannot be inserted twice)
   ensure_index($pdo, 'payments', 'uniq_payments_idem_key', "CREATE UNIQUE INDEX uniq_payments_idem_key ON payments (idempotency_key)");
+  ensure_index($pdo, 'payments', 'idx_payments_user_date_void', "CREATE INDEX idx_payments_user_date_void ON payments (user_id, created_at, is_void)");
 
   // audit log
   ensure_table($pdo, 'audit_logs', "CREATE TABLE audit_logs (
@@ -285,6 +286,19 @@ function default_user_permissions(?string $role = null): array
   ];
 }
 
+function array_merge_recursive_distinct(array $array1, array $array2): array
+{
+  $merged = $array1;
+  foreach ($array2 as $key => $value) {
+    if (is_array($value) && isset($merged[$key]) && is_array($merged[$key])) {
+      $merged[$key] = array_merge_recursive_distinct($merged[$key], $value);
+    } else {
+      $merged[$key] = $value;
+    }
+  }
+  return $merged;
+}
+
 function normalize_user_permissions($raw, ?string $role = null): array
 {
   $defaults = default_user_permissions($role);
@@ -304,10 +318,62 @@ function normalize_user_permissions($raw, ?string $role = null): array
     $receiptMode = $defaults['contract_payment_receipt_mode'];
   }
 
+  $screenPermissions = [];
+  if (isset($raw['screen_permissions']) && is_array($raw['screen_permissions'])) {
+    foreach ($raw['screen_permissions'] as $k => $v) {
+      $screenPermissions[trim((string)$k)] = (bool)$v;
+    }
+  } else {
+    // Legacy fallback: check if screen permission keys exist at the root level of raw permissions
+    $legacyKeys = [
+      'dashboard', 'rents', 'clients', 'equipment', 'payments',
+      'receipts', 'reports', 'hr', 'attendance', 'shifts',
+      'backup', 'settings', 'user_management', 'print', 'export'
+    ];
+    foreach ($legacyKeys as $k) {
+      if (isset($raw[$k])) {
+        $screenPermissions[$k] = (bool)$raw[$k];
+      }
+    }
+  }
+
   return [
     'contract_hour_pricing_mode' => $hourMode,
     'contract_payment_receipt_mode' => $receiptMode,
+    'screen_permissions' => $screenPermissions,
   ];
+}
+
+function has_permission(PDO $pdo, array $auth, string $permissionKey): bool
+{
+  if (strtolower(trim((string)($auth['role'] ?? ''))) === 'admin') {
+    return true;
+  }
+
+  $userId = (int)($auth['sub'] ?? $auth['uid'] ?? 0);
+  if ($userId <= 0) return false;
+
+  $st = $pdo->prepare("SELECT permissions_json FROM users WHERE id = ? LIMIT 1");
+  $st->execute([$userId]);
+  $permissionsJson = $st->fetchColumn();
+  if (!$permissionsJson) return false;
+
+  $perms = json_decode($permissionsJson, true);
+  if (!is_array($perms)) return false;
+
+  if (isset($perms['screen_permissions']) && is_array($perms['screen_permissions'])) {
+    return !empty($perms['screen_permissions'][$permissionKey]);
+  }
+
+  // Legacy fallback: check root keys
+  return !empty($perms[$permissionKey]);
+}
+
+function require_permission(PDO $pdo, array $auth, string $permissionKey): void
+{
+  if (!has_permission($pdo, $auth, $permissionKey)) {
+    respond(["error" => "ممنوع: ليس لديك صلاحية الوصول إلى هذه العملية ($permissionKey)"], 403);
+  }
 }
 
 function effective_contract_closing_modes(PDO $pdo, ?array $user = null): array

@@ -82,10 +82,17 @@ if ($path === "shifts" && $method === "GET") {
     $params[] = $to;
   }
 
-  // Permission scope
-  if (($auth['role'] ?? '') !== 'admin') {
+  // Permission scope: Admin OR shifts_monitoring can see all. Others only see own shifts.
+  $canMonitorAll = strtolower(trim((string)($auth['role'] ?? ''))) === 'admin' || has_permission($pdo, $auth, 'shifts_monitoring');
+  if (!$canMonitorAll) {
     $conds[] = "s.user_id = ?";
     $params[] = (int)($auth['sub'] ?? 0);
+  } else {
+    // If has monitoring permission, optionally allow filtering by target user_id
+    if (isset($_GET['user_id']) && (int)$_GET['user_id'] > 0) {
+      $conds[] = "s.user_id = ?";
+      $params[] = (int)$_GET['user_id'];
+    }
   }
 
   $where = count($conds) ? ("WHERE " . implode(" AND ", $conds)) : "";
@@ -133,19 +140,20 @@ if ($path === "shifts" && $method === "GET") {
 | body:
 | {
 |   shift_date: YYYY-MM-DD (optional -> today)
-|   cash_total: number (optional)
-|   transfer_total: number (optional)
 |   cash_in_drawer: number (required)
 |   note: string (optional)
 | }
 |
 | Stores into shift_closings:
-| expected_amount = cash_total + transfer_total
+| expected_amount = cash_total (Expected Cash Inflow - Cash Outflow)
 | actual_amount   = cash_in_drawer
 | difference      = actual - expected
 | notes           = note + breakdown
 |
 | Unique per (user_id, shift_date) -> UPSERT
+|--------------------------------------------------------------------------
+| SECURITY: cash_total and transfer_total are always recalculated on the
+| backend directly from the database and client-submitted values are ignored.
 |--------------------------------------------------------------------------
 */
 if ($path === "shifts/close" && $method === "POST") {
@@ -156,20 +164,41 @@ if ($path === "shifts/close" && $method === "POST") {
   $shiftDate = (string)($in['shift_date'] ?? date('Y-m-d'));
   if (!is_ymd($shiftDate)) respond(["error" => "تاريخ الوردية غير صالح. استخدم YYYY-MM-DD"], 400);
 
-  $cashTotal = (float)($in['cash_total'] ?? 0);
-  $transferTotal = (float)($in['transfer_total'] ?? 0);
+  // SECURE EXPECTED TOTALS RECALCULATION FROM DB
+  $stCalc = $pdo->prepare("
+    SELECT
+      -- Cash Inflows
+      IFNULL(SUM(CASE WHEN type='in' AND LOWER(method) IN ('cash','نقد','نقدي') THEN amount ELSE 0 END), 0) AS cash_in,
+      -- Cash Outflows
+      IFNULL(SUM(CASE WHEN type='out' AND LOWER(method) IN ('cash','نقد','نقدي') THEN amount ELSE 0 END), 0) AS cash_out,
+      -- Transfer Inflows
+      IFNULL(SUM(CASE WHEN type='in' AND LOWER(method) IN ('transfer','تحويل','bank') THEN amount ELSE 0 END), 0) AS transfer_in,
+      -- Transfer Outflows
+      IFNULL(SUM(CASE WHEN type='out' AND LOWER(method) IN ('transfer','تحويل','bank') THEN amount ELSE 0 END), 0) AS transfer_out
+    FROM payments
+    WHERE user_id = ?
+      AND (is_void = 0 OR is_void IS NULL)
+      AND DATE(created_at) = ?
+  ");
+  $stCalc->execute([$uid, $shiftDate]);
+  $calc = $stCalc->fetch(PDO::FETCH_ASSOC);
+
+  $cashTotal = (float)($calc['cash_in'] ?? 0) - (float)($calc['cash_out'] ?? 0);
+  $transferTotal = (float)($calc['transfer_in'] ?? 0) - (float)($calc['transfer_out'] ?? 0);
+
   $cashInDrawer = $in['cash_in_drawer'] ?? $in['actual_amount'] ?? null;
   if ($cashInDrawer === null || $cashInDrawer === '') {
     respond(["error" => "النقد في الدرج مطلوب"], 422);
   }
   $cashInDrawer = (float)$cashInDrawer;
 
-  $expected = (float)($cashTotal + $transferTotal);
-  $actual = (float)$cashInDrawer;
+  // Real drawer balance expected to match net cash flow
+  $expected = $cashTotal;
+  $actual = $cashInDrawer;
   $diff = (float)($actual - $expected);
 
   $note = trim((string)($in['note'] ?? $in['notes'] ?? ''));
-  // Keep a lightweight breakdown in notes so UI can display it even with current DB schema
+  // Keep breakdown in notes for legacy transparency
   $breakdown = "[cash_total={$cashTotal}, transfer_total={$transferTotal}]";
   $finalNotes = $note === '' ? $breakdown : ($note . " " . $breakdown);
 
@@ -228,7 +257,7 @@ if ($path === "shifts/close" && $method === "POST") {
 /*
 |--------------------------------------------------------------------------
 | GET shifts/today-summary
-| Returns system-calculated cash and transfer totals for today
+| Returns system-calculated cash and transfer totals for today for the user.
 | Used by the shift closing dialog to show read-only system values.
 |--------------------------------------------------------------------------
 */
@@ -236,27 +265,50 @@ if ($path === "shifts/today-summary" && $method === "GET") {
   $shiftDate = $_GET['date'] ?? date('Y-m-d');
   if (!is_ymd($shiftDate)) respond(["error" => "تاريخ غير صالح"], 400);
 
-  // Sum of incoming payments by method for the given date
+  $uid = (int)($auth['sub'] ?? $auth['uid'] ?? 0);
+  $targetUid = $uid;
+
+  $canMonitorAll = strtolower(trim((string)($auth['role'] ?? ''))) === 'admin' || has_permission($pdo, $auth, 'shifts_monitoring');
+  if ($canMonitorAll && isset($_GET['user_id']) && (int)$_GET['user_id'] > 0) {
+    $targetUid = (int)$_GET['user_id'];
+  }
+
+  // Calculate user-specific cash inflows minus outflows, and bank transfer inflows minus outflows
   $st = $pdo->prepare("
     SELECT
-      IFNULL(SUM(CASE WHEN LOWER(method) IN ('cash','نقد','نقدي') THEN amount ELSE 0 END), 0) AS cash_total,
-      IFNULL(SUM(CASE WHEN LOWER(method) IN ('transfer','تحويل','bank') THEN amount ELSE 0 END), 0) AS transfer_total,
-      IFNULL(SUM(amount), 0) AS total_income
+      -- Cash Inflows
+      IFNULL(SUM(CASE WHEN type='in' AND LOWER(method) IN ('cash','نقد','نقدي') THEN amount ELSE 0 END), 0) AS cash_in,
+      -- Cash Outflows
+      IFNULL(SUM(CASE WHEN type='out' AND LOWER(method) IN ('cash','نقد','نقدي') THEN amount ELSE 0 END), 0) AS cash_out,
+      -- Transfer Inflows
+      IFNULL(SUM(CASE WHEN type='in' AND LOWER(method) IN ('transfer','تحويل','bank') THEN amount ELSE 0 END), 0) AS transfer_in,
+      -- Transfer Outflows
+      IFNULL(SUM(CASE WHEN type='out' AND LOWER(method) IN ('transfer','تحويل','bank') THEN amount ELSE 0 END), 0) AS transfer_out
     FROM payments
-    WHERE type='in'
-      AND (is_void=0 OR is_void IS NULL)
+    WHERE user_id = ?
+      AND (is_void = 0 OR is_void IS NULL)
       AND DATE(created_at) = ?
   ");
-  $st->execute([$shiftDate]);
+  $st->execute([$targetUid, $shiftDate]);
   $row = $st->fetch(PDO::FETCH_ASSOC);
+
+  $cashIn = (float)($row['cash_in'] ?? 0);
+  $cashOut = (float)($row['cash_out'] ?? 0);
+  $transferIn = (float)($row['transfer_in'] ?? 0);
+  $transferOut = (float)($row['transfer_out'] ?? 0);
+
+  $cashTotal = $cashIn - $cashOut;
+  $transferTotal = $transferIn - $transferOut;
+  $totalIncome = $cashTotal + $transferTotal;
 
   respond([
     "success" => true,
     "data" => [
       "date" => $shiftDate,
-      "cash_total" => (float)($row['cash_total'] ?? 0),
-      "transfer_total" => (float)($row['transfer_total'] ?? 0),
-      "total_income" => (float)($row['total_income'] ?? 0),
+      "user_id" => $targetUid,
+      "cash_total" => $cashTotal,
+      "transfer_total" => $transferTotal,
+      "total_income" => $totalIncome,
     ]
   ]);
 }
