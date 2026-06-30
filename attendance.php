@@ -73,18 +73,6 @@ function ensure_attendance_schema(PDO $pdo): void {
 ensure_attendance_schema($pdo);
 
 // -----------------------------------------------------------------------------
-// Policy / Work rules
-// -----------------------------------------------------------------------------
-// Friday is weekly holiday (Saudi)
-if (!defined('HR_WEEKLY_HOLIDAY_DOW')) define('HR_WEEKLY_HOLIDAY_DOW', 5);
-if (!defined('HR_MORNING_START')) define('HR_MORNING_START', '06:00:00');
-if (!defined('HR_MORNING_END')) define('HR_MORNING_END', '12:00:00');
-if (!defined('HR_EVENING_START')) define('HR_EVENING_START', '16:00:00');
-if (!defined('HR_EVENING_END')) define('HR_EVENING_END', '21:00:00');
-if (!defined('HR_GRACE_MINUTES')) define('HR_GRACE_MINUTES', 15);
-if (!defined('HR_WORKDAY_HOURS')) define('HR_WORKDAY_HOURS', 11);
-
-// -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
 

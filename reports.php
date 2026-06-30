@@ -744,11 +744,6 @@ if ($path === 'reports/employee-performance' && $method === 'GET') {
     ? ("AND p.is_void=0 AND p.type='in' AND " . implode(' AND ', $dw['conds']))
     : "AND p.is_void=0 AND p.type='in'";
 
-  $dwr = fin_date_where('r.created_at', $from, $to);
-  $rentWhere = count($dwr['conds'])
-    ? ('AND ' . implode(' AND ', $dwr['conds']))
-    : '';
-
   $userFilter = ($role !== 'admin' && !has_permission($pdo, $auth, 'hr')) ? 'AND u.id = ' . $myId : '';
 
   $sql = "SELECT
@@ -757,16 +752,15 @@ if ($path === 'reports/employee-performance' && $method === 'GET') {
     u.role,
     COUNT(DISTINCT p.id) AS receipts_count,
     COALESCE(SUM(p.amount),0) AS total_collected,
-    COUNT(DISTINCT r.id) AS contracts_created,
-    COALESCE(SUM(DISTINCT r.total_amount),0) AS total_contract_value
+    0 AS contracts_created,
+    0 AS total_contract_value
   FROM users u
   LEFT JOIN payments p ON p.user_id=u.id $payWhere
-  LEFT JOIN rents r ON r.created_by=u.id $rentWhere
   WHERE 1=1 $userFilter
   GROUP BY u.id, u.username, u.role
   ORDER BY total_collected DESC";
 
-  $params = array_merge($dw['params'], $dwr['params']);
+  $params = $dw['params'];
   $st = $pdo->prepare($sql);
   $st->execute($params);
   $rows = $st->fetchAll(PDO::FETCH_ASSOC);

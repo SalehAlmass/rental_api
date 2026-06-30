@@ -31,17 +31,6 @@ function ensure_attendance_schema(PDO $pdo): void {
 
 ensure_attendance_schema($pdo);
 
-// -----------------------------------------------------------------------------
-// HR rules (Friday holiday)
-// -----------------------------------------------------------------------------
-if (!defined('HR_WEEKLY_HOLIDAY_DOW')) define('HR_WEEKLY_HOLIDAY_DOW', 5);
-if (!defined('HR_MORNING_START')) define('HR_MORNING_START', '06:00:00');
-if (!defined('HR_MORNING_END')) define('HR_MORNING_END', '12:00:00');
-if (!defined('HR_EVENING_START')) define('HR_EVENING_START', '16:00:00');
-if (!defined('HR_EVENING_END')) define('HR_EVENING_END', '21:00:00');
-if (!defined('HR_GRACE_MINUTES')) define('HR_GRACE_MINUTES', 15);
-if (!defined('HR_WORKDAY_HOURS')) define('HR_WORKDAY_HOURS', 11);
-
 function _shift_bounds_for_ts(int $ts): array {
   $day = date('Y-m-d', $ts);
   $midday = strtotime($day . ' 12:00:00');
@@ -187,7 +176,7 @@ function calc_amount(array $user, float $hours): float {
 
 // GET payroll/me?month=YYYY-MM
 if ($path === 'payroll/me' && $method === 'GET') {
-  $uid = (int)$auth['uid'];
+  $uid = (int)($auth['sub'] ?? $auth['id'] ?? $auth['uid'] ?? 0);
   $month = trim((string)($_GET['month'] ?? ''));
   if ($month === '') $month = date('Y-m');
   $from = date('Y-m-01 00:00:00', strtotime($month . '-01'));

@@ -297,6 +297,13 @@ if ($path === "system-integrity" && $method === "GET") {
 if ($path === "system-health/errors" && $method === "GET") {
   $st = $pdo->query("SELECT id, user_id, api, error_message, stack_trace, created_at FROM system_errors ORDER BY id DESC LIMIT 50");
   $errors = $st->fetchAll(PDO::FETCH_ASSOC);
+  foreach ($errors as &$err) {
+    $cat = categorize_error($err['error_message'] ?? '');
+    $err['title_ar'] = $cat['title_ar'];
+    $err['cause_ar'] = $cat['cause_ar'];
+    $err['severity'] = $cat['severity'];
+    $err['suggested_action_ar'] = $cat['suggested_action_ar'];
+  }
   respond([
     "success" => true,
     "data" => $errors

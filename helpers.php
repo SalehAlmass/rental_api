@@ -982,6 +982,79 @@ function respond_error(string $message, string $errorCode = "SERVER_ERROR", int 
   ], $code);
 }
 
+function categorize_error(string $msg): array {
+  if (str_contains($msg, 'Constant') && str_contains($msg, 'already defined')) {
+    return [
+      'title_ar' => 'خطأ في تعريف الثوابت (Constants)',
+      'cause_ar' => 'تمت محاولة تعريف ثابت (Constant) سبق تعريفه في ملف آخر',
+      'severity' => 'منخفض',
+      'suggested_action_ar' => 'نقل جميع تعريفات الثوابت إلى ملف واحد (attendance_calculator.php) واستخدام require_once فقط'
+    ];
+  }
+  if (str_contains($msg, 'Column not found') || str_contains($msg, 'Unknown column')) {
+    return [
+      'title_ar' => 'خطأ في استعلام قاعدة البيانات',
+      'cause_ar' => 'استعلام SQL يشير إلى عامود (Column) غير موجود في جدول قاعدة البيانات',
+      'severity' => 'عالي',
+      'suggested_action_ar' => 'التحقق من أسماء الأعمدة في استعلام SQL ومطابقتها لهيكل الجدول الفعلي في قاعدة البيانات'
+    ];
+  }
+  if (str_contains($msg, 'Table') && (str_contains($msg, 'not found') || str_contains($msg, 'doesn\'t exist'))) {
+    return [
+      'title_ar' => 'خطأ في قاعدة البيانات - جدول غير موجود',
+      'cause_ar' => 'استعلام SQL يشير إلى جدول غير موجود في قاعدة البيانات',
+      'severity' => 'عالي',
+      'suggested_action_ar' => 'التأكد من وجود الجدول في قاعدة البيانات أو تفعيل الترحيل التلقائي (auto-migration)'
+    ];
+  }
+  if (str_contains($msg, 'SQLSTATE') || str_contains($msg, 'PDO') || str_contains($msg, 'SQL')) {
+    return [
+      'title_ar' => 'خطأ في قاعدة البيانات',
+      'cause_ar' => 'حدث خطأ أثناء تنفيذ استعلام على قاعدة البيانات',
+      'severity' => 'عالي',
+      'suggested_action_ar' => 'مراجعة سجل الأخطاء التقني واستعلام SQL المسبب للخطأ'
+    ];
+  }
+  if (str_contains($msg, 'Division by zero')) {
+    return [
+      'title_ar' => 'خطأ رياضي - قسمة على صفر',
+      'cause_ar' => 'تمت محاولة قسمة رقم على صفر في إحدى العمليات الحسابية',
+      'severity' => 'متوسط',
+      'suggested_action_ar' => 'إضافة شرط للتحقق من القيمة قبل إجراء عملية القسمة'
+    ];
+  }
+  if (str_contains($msg, 'Undefined array key') || str_contains($msg, 'Undefined index') || str_contains($msg, 'Undefined offset')) {
+    return [
+      'title_ar' => 'خطأ في الوصول إلى مصفوفة',
+      'cause_ar' => 'محاولة الوصول إلى مفتاح غير موجود في مصفوفة (Array)',
+      'severity' => 'متوسط',
+      'suggested_action_ar' => 'التأكد من وجود المفتاح باستخدام isset() أو array_key_exists() قبل الوصول إليه'
+    ];
+  }
+  if (str_contains($msg, 'Call to undefined function')) {
+    return [
+      'title_ar' => 'خطأ في استدعاء دالة غير معرفة',
+      'cause_ar' => 'محاولة استدعاء دالة (Function) غير موجودة في ملف PHP',
+      'severity' => 'عالي',
+      'suggested_action_ar' => 'التأكد من تضمين الملف الذي يحتوي على تعريف الدالة باستخدام require_once'
+    ];
+  }
+  if (str_contains($msg, 'Trying to access array offset on false') || str_contains($msg, 'Trying to get property')) {
+    return [
+      'title_ar' => 'خطأ في التعامل مع القيم الفارغة',
+      'cause_ar' => 'محاولة التعامل مع قيمة فارغة (null/false) كأنها مصفوفة أو كائن',
+      'severity' => 'متوسط',
+      'suggested_action_ar' => 'التحقق من صحة القيمة قبل الوصول إلى خصائصها باستخدام isset() أو empty()'
+    ];
+  }
+  return [
+    'title_ar' => 'خطأ في النظام',
+    'cause_ar' => $msg,
+    'severity' => 'متوسط',
+    'suggested_action_ar' => 'مراجعة سجل الأخطاء التقني (Stack Trace) لمزيد من التفاصيل'
+  ];
+}
+
 function log_system_error(string $errorMessage, ?string $stackTrace = null): void {
   try {
     $pdo = db();
