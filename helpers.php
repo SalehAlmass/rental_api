@@ -957,8 +957,14 @@ function ensure_enterprise_schema(PDO $pdo): void {
       error_message TEXT NOT NULL,
       stack_trace TEXT NULL,
       request_data JSON NULL,
+      status ENUM('open','resolved') NOT NULL DEFAULT 'open',
+      resolved_at DATETIME NULL,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
+  // ensure columns on system_errors (for existing installations)
+  ensure_column($pdo, 'system_errors', 'status', "ALTER TABLE system_errors ADD COLUMN status ENUM('open','resolved') NOT NULL DEFAULT 'open' AFTER request_data");
+  ensure_column($pdo, 'system_errors', 'resolved_at', "ALTER TABLE system_errors ADD COLUMN resolved_at DATETIME NULL AFTER status");
 
   // ensure columns on audit_logs
   ensure_column($pdo, 'audit_logs', 'ip_address', "ALTER TABLE audit_logs ADD COLUMN ip_address VARCHAR(45) NULL AFTER created_at");

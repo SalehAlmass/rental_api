@@ -295,7 +295,16 @@ if ($path === "system-integrity" && $method === "GET") {
 |--------------------------------------------------------------------------
 */
 if ($path === "system-health/errors" && $method === "GET") {
-  $st = $pdo->query("SELECT id, user_id, api, error_message, stack_trace, created_at FROM system_errors ORDER BY id DESC LIMIT 50");
+  $statusFilter = trim((string)($_GET['status'] ?? ''));
+  $where = '';
+  $params = [];
+  if ($statusFilter === 'open') {
+    $where = "WHERE status = 'open'";
+  } elseif ($statusFilter === 'resolved') {
+    $where = "WHERE status = 'resolved'";
+  }
+  $st = $pdo->prepare("SELECT id, user_id, api, error_message, stack_trace, status, resolved_at, created_at FROM system_errors {$where} ORDER BY id DESC LIMIT 50");
+  $st->execute($params);
   $errors = $st->fetchAll(PDO::FETCH_ASSOC);
   foreach ($errors as &$err) {
     $cat = categorize_error($err['error_message'] ?? '');
@@ -304,9 +313,20 @@ if ($path === "system-health/errors" && $method === "GET") {
     $err['severity'] = $cat['severity'];
     $err['suggested_action_ar'] = $cat['suggested_action_ar'];
   }
+  // Counts for filter badges
+  $counts = [];
+  $cst = $pdo->query("SELECT status, COUNT(*) as cnt FROM system_errors GROUP BY status");
+  foreach ($cst->fetchAll(PDO::FETCH_ASSOC) as $c) {
+    $counts[$c['status']] = (int)$c['cnt'];
+  }
   respond([
     "success" => true,
-    "data" => $errors
+    "data" => $errors,
+    "counts" => [
+      "total" => ($counts['open'] ?? 0) + ($counts['resolved'] ?? 0),
+      "open" => $counts['open'] ?? 0,
+      "resolved" => $counts['resolved'] ?? 0,
+    ]
   ], 200);
 }
 
