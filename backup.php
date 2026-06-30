@@ -169,11 +169,14 @@ if ($path === "backup/list" && $method === "GET") {
 |-----------------------------------------------------------
 */
 if ($path === "backup/create" && $method === "POST") {
+  $uid = (int)($auth['sub'] ?? $auth['uid'] ?? 0);
   if (!is_writable($backupDir)) {
+    $st = $pdo->prepare("INSERT INTO backup_logs (user_id, file_name, file_size, status) VALUES (?, ?, 0, 'failed')");
+    $st->execute([$uid, '']);
+    audit_log($pdo, 'backup_failed', 'backup', null, null, null, ['reason' => 'backup_directory_not_writable']);
     respond(["error" => "مجلد النسخ الاحتياطي غير قابل للكتابة"], 500);
   }
 
-  // وقت أطول للنسخ
   @set_time_limit(120);
 
   $in = json_in();
@@ -185,12 +188,29 @@ if ($path === "backup/create" && $method === "POST") {
   $filename = "backup_{$type}_" . date("Y-m-d_H-i-s") . ".sql";
   $fullpath = $backupDir . "/" . $filename;
 
+  if (file_exists($fullpath)) {
+    audit_log($pdo, 'backup_failed', 'backup', null, null, null, ['reason' => 'file_already_exists', 'file' => $filename]);
+    respond(["error" => "الملف موجود بالفعل، يرجى المحاولة بعد ثانية أخرى"], 409);
+  }
+
   try {
     $sql = dump_database($pdo, $type);
     file_put_contents($fullpath, $sql);
     copy_backup_to_custom_paths($pdo, $fullpath, $filename);
 
-    // ✅ Auto-prune: keep only the latest 30 backups
+    $fileSize = (int)filesize($fullpath);
+
+    $st = $pdo->prepare("INSERT INTO backup_logs (user_id, file_name, file_size, status) VALUES (?, ?, ?, 'success')");
+    $st->execute([$uid, $filename, $fileSize]);
+    $logId = (int)$pdo->lastInsertId();
+
+    audit_log($pdo, 'backup_created', 'backup', $logId, null, null, [
+      'file' => $filename,
+      'size' => $fileSize,
+      'type' => $type
+    ]);
+
+    // Auto-prune: keep only the latest 30 backups
     $allBackups = glob($backupDir . "/backup_*.sql") ?: [];
     usort($allBackups, function($a, $b) { return filemtime($b) - filemtime($a); });
     $maxKeep = 30;
@@ -207,13 +227,19 @@ if ($path === "backup/create" && $method === "POST") {
         "file" => $filename,
         "name" => $filename,
         "type" => $type,
-        "size" => (int)filesize($fullpath),
-        "size_bytes" => (int)filesize($fullpath),
+        "size" => $fileSize,
+        "size_bytes" => $fileSize,
         "created_at" => date("Y-m-d H:i:s", filemtime($fullpath)),
         "modified_at" => date("Y-m-d H:i:s", filemtime($fullpath)),
       ],
     ], 201);
   } catch (Throwable $e) {
+    $st = $pdo->prepare("INSERT INTO backup_logs (user_id, file_name, file_size, status) VALUES (?, ?, 0, 'failed')");
+    $st->execute([$uid, $filename]);
+    audit_log($pdo, 'backup_failed', 'backup', null, null, null, [
+      'file' => $filename,
+      'reason' => $e->getMessage()
+    ]);
     respond(["error" => "فشلت عملية النسخ الاحتياطي: " . $e->getMessage()], 500);
   }
 }
@@ -283,18 +309,28 @@ if ($path === "backup/restore" && $method === "POST") {
   @set_time_limit(300);
 
   $in = json_in();
-  // ✅ accept both 'name' and 'file' (Flutter used file previously)
   $name = safe_name($in["name"] ?? ($in["file"] ?? ""));
   if ($name === "") respond(["error" => "اسم الملف مطلوب"], 422);
 
   $fullpath = $backupDir . "/" . $name;
-  if (!file_exists($fullpath)) respond(["error" => "النسخة الاحتياطية غير موجودة"], 404);
+  if (!file_exists($fullpath)) {
+    audit_log($pdo, 'backup_restore_failed', 'backup', null, null, null, [
+      'file' => $name,
+      'reason' => 'file_not_found'
+    ]);
+    respond(["error" => "النسخة الاحتياطية غير موجودة"], 404);
+  }
 
   $sql = file_get_contents($fullpath);
-  if ($sql === false || trim($sql) === "") respond(["error" => "ملف النسخة الاحتياطية فارغ"], 422);
+  if ($sql === false || trim($sql) === "") {
+    audit_log($pdo, 'backup_restore_failed', 'backup', null, null, null, [
+      'file' => $name,
+      'reason' => 'file_empty'
+    ]);
+    respond(["error" => "ملف النسخة الاحتياطية فارغ"], 422);
+  }
 
   try {
-    // ✅ important: remove comments before splitting, otherwise statements start with comments and get skipped
     $sql = strip_sql_comments($sql);
     $stmts = split_sql_statements($sql);
 
@@ -312,11 +348,20 @@ if ($path === "backup/restore" && $method === "POST") {
 
     $pdo->exec("SET FOREIGN_KEY_CHECKS=1");
 
+    audit_log($pdo, 'backup_restored', 'backup', null, null, null, [
+      'file' => $name
+    ]);
+
     respond(["success" => true, "message" => "تمت استعادة النسخة الاحتياطية بنجاح", "name" => $name], 200);
   } catch (Throwable $e) {
     try {
       $pdo->exec("SET FOREIGN_KEY_CHECKS=1");
     } catch (Throwable $ignore) {}
+    
+    audit_log($pdo, 'backup_restore_failed', 'backup', null, null, null, [
+      'file' => $name,
+      'reason' => $e->getMessage()
+    ]);
     respond(["error" => "فشلت عملية الاستعادة: " . $e->getMessage()], 500);
   }
 }

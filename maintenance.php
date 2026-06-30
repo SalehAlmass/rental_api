@@ -30,7 +30,7 @@ if ($path === 'maintenance/clear-business-data' && $method === 'DELETE') {
 
   $in = json_in();
   $confirm = trim((string)($in['confirm'] ?? $_GET['confirm'] ?? ''));
-  if ($confirm !== 'CLEAR') {
+  if ($confirm !== 'CLEAR' && $confirm !== 'مسح') {
     maintenance_fail('Confirmation required', 400);
   }
 

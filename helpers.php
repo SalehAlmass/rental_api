@@ -144,6 +144,7 @@ function ensure_financials_schema(PDO $pdo): void {
 
   // Run database indexing checks to optimize queries and ensure concurrency stability
   ensure_performance_indexes($pdo);
+  ensure_enterprise_schema($pdo);
 }
 
 function ensure_performance_indexes(PDO $pdo): void {
@@ -157,6 +158,7 @@ function ensure_performance_indexes(PDO $pdo): void {
   ensure_index($pdo, 'payments', 'idx_payments_rent_id', "CREATE INDEX idx_payments_rent_id ON payments (rent_id)");
   ensure_index($pdo, 'payments', 'idx_payments_user_id', "CREATE INDEX idx_payments_user_id ON payments (user_id)");
   ensure_index($pdo, 'payments', 'idx_payments_created_at', "CREATE INDEX idx_payments_created_at ON payments (created_at)");
+  ensure_index($pdo, 'payments', 'idx_payments_user_created', "CREATE INDEX idx_payments_user_created ON payments (user_id, created_at)");
 
   // 3. audit_logs indexes
   ensure_index($pdo, 'audit_logs', 'idx_audit_logs_user_id', "CREATE INDEX idx_audit_logs_user_id ON audit_logs (user_id)");
@@ -174,9 +176,14 @@ function ensure_performance_indexes(PDO $pdo): void {
   ensure_index($pdo, 'payments', 'idx_payments_type', "CREATE INDEX idx_payments_type ON payments (type)");
   ensure_index($pdo, 'payments', 'idx_payments_method', "CREATE INDEX idx_payments_method ON payments (method)");
   ensure_index($pdo, 'payments', 'idx_payments_is_void', "CREATE INDEX idx_payments_is_void ON payments (is_void)");
+  ensure_index($pdo, 'payments', 'idx_payments_type_method', "CREATE INDEX idx_payments_type_method ON payments (type, method)");
 
   // 6. Rents indexes for financial reports
   ensure_index($pdo, 'rents', 'idx_rents_status_created', "CREATE INDEX idx_rents_status_created ON rents (status, created_at)");
+
+  // 7. Attendance logs indexes for performance
+  ensure_index($pdo, 'attendance_logs', 'idx_attendance_user_ts', "CREATE INDEX idx_attendance_user_ts ON attendance_logs (user_id, ts)");
+  ensure_index($pdo, 'attendance_logs', 'idx_attendance_type', "CREATE INDEX idx_attendance_type ON attendance_logs (type)");
 }
 
 function audit_log(
@@ -220,8 +227,11 @@ function audit_log(
   $newValuesRedacted = $redact($newValues);
   $metaRedacted = $redact($meta) ?: [];
 
-  $st = $pdo->prepare("INSERT INTO audit_logs (user_id, action, entity, entity_id, old_values, new_values, meta)
-                       VALUES (?,?,?,?,?,?,?)");
+  $ipAddress = $_SERVER['REMOTE_ADDR'] ?? null;
+  $deviceInfo = $_SERVER['HTTP_USER_AGENT'] ?? null;
+
+  $st = $pdo->prepare("INSERT INTO audit_logs (user_id, action, entity, entity_id, old_values, new_values, meta, ip_address, device_info)
+                       VALUES (?,?,?,?,?,?,?,?,?)");
   $st->execute([
     $userId,
     $action,
@@ -229,7 +239,9 @@ function audit_log(
     $entityId,
     $oldValuesRedacted !== null ? json_encode($oldValuesRedacted, JSON_UNESCAPED_UNICODE) : null,
     $newValuesRedacted !== null ? json_encode($newValuesRedacted, JSON_UNESCAPED_UNICODE) : null,
-    empty($metaRedacted) ? null : json_encode($metaRedacted, JSON_UNESCAPED_UNICODE)
+    empty($metaRedacted) ? null : json_encode($metaRedacted, JSON_UNESCAPED_UNICODE),
+    $ipAddress,
+    $deviceInfo
   ]);
 }
 
@@ -290,13 +302,33 @@ function require_auth(): array {
     if ($hdr === "" && !empty($headers['authorization'])) $hdr = $headers['authorization'];
   }
 
-  if (!preg_match('/Bearer\s+(.*)$/i', $hdr, $m)) respond(["error"=>"غير مصرح"], 401);
+  if (!preg_match('/Bearer\s+(.*)$/i', $hdr, $m)) respond(["error"=>"جلسة الدخول غير صالحة، يرجى تسجيل الدخول مرة أخرى."], 401);
 
-  $payload = jwt_verify(trim($m[1]), $JWT_SECRET);
-  if (!$payload) respond(["error"=>"رمز غير صالح"], 401);
-  if (isset($payload["exp"]) && time() > (int)$payload["exp"]) respond(["error"=>"انتهت صلاحية الرمز"], 401);
+  $token = trim($m[1]);
+  $payload = jwt_verify($token, $JWT_SECRET);
+  if (!$payload) respond(["error"=>"رمز الجلسة غير صالح، يرجى تسجيل الدخول مجدداً."], 401);
+  if (isset($payload["exp"]) && time() > (int)$payload["exp"]) respond(["error"=>"انتهت صلاحية الجلسة، يرجى تسجيل الدخول مرة أخرى."], 401);
+
+  $tokenHash = hash('sha256', $token);
+  $pdo = db();
+
+  // Validate session in database
+  $stSession = $pdo->prepare("SELECT COUNT(*) FROM user_sessions WHERE token_hash = ? AND expires_at > NOW()");
+  $stSession->execute([$tokenHash]);
+  $sessionExists = (int)$stSession->fetchColumn() > 0;
+
+  $migrationComplete = (setting_get($pdo, 'session_migration_complete', '0') === '1');
+  if ($migrationComplete && !$sessionExists) {
+    respond(["error" => "انتهت صلاحية الجلسة أو تم تسجيل الخروج"], 401);
+  }
+
+  if ($sessionExists) {
+    $upd = $pdo->prepare("UPDATE user_sessions SET last_activity = NOW() WHERE token_hash = ?");
+    $upd->execute([$tokenHash]);
+  }
 
   $GLOBALS['auth_payload'] = $payload;
+  $GLOBALS['auth_token_hash'] = $tokenHash;
 
   return $payload;
 }
@@ -822,7 +854,7 @@ function dump_database(PDO $pdo, string $mode = 'full'): string {
         if ($v === null) {
           $vals[] = "NULL";
         } else {
-          $vals[] = $pdo->quote($v);
+          $vals[] = $pdo->quote((string)$v);
         }
       }
       $batch[] = "(" . implode(",", $vals) . ")";
@@ -840,22 +872,174 @@ function dump_database(PDO $pdo, string $mode = 'full'): string {
   return $sql;
 }
 
+function is_safe_backup_path(string $path): bool {
+  $real = realpath($path);
+  if ($real === false) {
+    $parent = dirname($path);
+    $real = realpath($parent);
+    if ($real === false) return false;
+  }
+  
+  $path = str_replace('\\', '/', strtolower($real));
+  $path = rtrim($path, '/');
+  
+  $unsafePrefixes = [
+    'c:/windows', 'c:/program files', 'c:/program files (x86)', 'c:/users/administrator',
+    '/etc', '/var', '/bin', '/usr', '/sys', '/boot', '/proc', '/dev', '/lib', '/lib64'
+  ];
+  
+  foreach ($unsafePrefixes as $prefix) {
+    if (str_starts_with($path, $prefix)) return false;
+  }
+  
+  // Prevent writing inside code folders except backups
+  $apiDir = str_replace('\\', '/', strtolower(realpath(__DIR__)));
+  if (str_starts_with($path, $apiDir) && !str_starts_with($path, $apiDir . '/backups')) {
+    return false;
+  }
+  
+  return true;
+}
+
 function copy_backup_to_custom_paths(PDO $pdo, string $sourceFullpath, string $filename): void {
   $path1 = setting_get($pdo, "backup_custom_path_1", "");
   $path2 = setting_get($pdo, "backup_custom_path_2", "");
 
   if ($path1 !== "") {
     $path1 = rtrim(str_replace('\\', '/', $path1), '/');
-    if (is_dir($path1)) {
-      @copy($sourceFullpath, $path1 . '/' . $filename);
+    if (is_dir($path1) && is_safe_backup_path($path1)) {
+      $dest = $path1 . '/' . $filename;
+      if (!file_exists($dest)) {
+        @copy($sourceFullpath, $dest);
+      }
     }
   }
 
   if ($path2 !== "") {
     $path2 = rtrim(str_replace('\\', '/', $path2), '/');
-    if (is_dir($path2)) {
-      @copy($sourceFullpath, $path2 . '/' . $filename);
+    if (is_dir($path2) && is_safe_backup_path($path2)) {
+      $dest = $path2 . '/' . $filename;
+      if (!file_exists($dest)) {
+        @copy($sourceFullpath, $dest);
+      }
     }
   }
+}
+
+function ensure_enterprise_schema(PDO $pdo): void {
+  // Create tables if not exists
+  $pdo->exec("CREATE TABLE IF NOT EXISTS user_sessions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      token_hash VARCHAR(64) NOT NULL,
+      device_name VARCHAR(255) NULL,
+      device_platform VARCHAR(100) NULL,
+      last_activity DATETIME NOT NULL,
+      expires_at DATETIME NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE INDEX idx_token_hash (token_hash),
+      INDEX idx_user_id (user_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
+  $pdo->exec("CREATE TABLE IF NOT EXISTS backup_logs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NULL,
+      file_name VARCHAR(255) NOT NULL,
+      file_size INT NOT NULL,
+      status VARCHAR(20) NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
+  $pdo->exec("CREATE TABLE IF NOT EXISTS system_errors (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NULL,
+      api VARCHAR(255) NOT NULL,
+      error_message TEXT NOT NULL,
+      stack_trace TEXT NULL,
+      request_data JSON NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
+  // ensure columns on audit_logs
+  ensure_column($pdo, 'audit_logs', 'ip_address', "ALTER TABLE audit_logs ADD COLUMN ip_address VARCHAR(45) NULL AFTER created_at");
+  ensure_column($pdo, 'audit_logs', 'device_info', "ALTER TABLE audit_logs ADD COLUMN device_info VARCHAR(255) NULL AFTER ip_address");
+}
+
+function respond_success($data = null, string $message = "", int $code = 200): void {
+  respond([
+    "success" => true,
+    "data" => $data,
+    "message" => $message
+  ], $code);
+}
+
+function respond_error(string $message, string $errorCode = "SERVER_ERROR", int $code = 500): void {
+  respond([
+    "success" => false,
+    "error" => $message, // legacy support
+    "error_code" => $errorCode,
+    "message" => $message
+  ], $code);
+}
+
+function log_system_error(string $errorMessage, ?string $stackTrace = null): void {
+  try {
+    $pdo = db();
+    $uid = null;
+    try {
+      if (function_exists('auth_user')) {
+        $u = auth_user();
+        if (is_array($u) && isset($u['id'])) $uid = (int)$u['id'];
+      }
+    } catch (Throwable $ignore) {}
+    
+    $api = $_SERVER['REQUEST_URI'] ?? 'CLI';
+    
+    $requestData = [
+      'method' => $_SERVER['REQUEST_METHOD'] ?? 'GET',
+      'get' => $_GET,
+      'post' => json_in() ?: $_POST
+    ];
+    // redact passwords
+    $sensitiveKeys = ['password', 'password_hash', 'token', 'auth_secret', 'secret'];
+    if (isset($requestData['post']) && is_array($requestData['post'])) {
+      foreach ($requestData['post'] as $k => $v) {
+        if (in_array(strtolower((string)$k), $sensitiveKeys, true)) {
+          $requestData['post'][$k] = '[REDACTED]';
+        }
+      }
+    }
+    
+    $st = $pdo->prepare("INSERT INTO system_errors (user_id, api, error_message, stack_trace, request_data) VALUES (?, ?, ?, ?, ?)");
+    $st->execute([
+      $uid,
+      $api,
+      $errorMessage,
+      $stackTrace,
+      json_encode($requestData, JSON_UNESCAPED_UNICODE)
+    ]);
+  } catch (Throwable $e) {
+    // Fail silently to prevent infinite loops
+  }
+}
+
+// Global enterprise error handlers
+if (php_sapi_name() !== 'cli') {
+  set_exception_handler(function(Throwable $e) {
+    log_system_error($e->getMessage(), $e->getTraceAsString());
+    respond_error("حدث خطأ غير متوقع في الخادم، يرجى المحاولة لاحقاً", "SERVER_ERROR", 500);
+  });
+
+  set_error_handler(function(int $errno, string $errstr, string $errfile, int $errline) {
+    if (!(error_reporting() & $errno)) {
+      return false;
+    }
+    $msg = "PHP Error: $errstr in $errfile on line $errline";
+    log_system_error($msg);
+    if ($errno === E_ERROR || $errno === E_USER_ERROR || $errno === E_RECOVERABLE_ERROR) {
+      respond_error("حدث خطأ في النظام، يرجى المحاولة لاحقاً", "SYSTEM_ERROR", 500);
+    }
+    return false;
+  });
 }
 

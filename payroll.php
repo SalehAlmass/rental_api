@@ -34,13 +34,13 @@ ensure_attendance_schema($pdo);
 // -----------------------------------------------------------------------------
 // HR rules (Friday holiday)
 // -----------------------------------------------------------------------------
-const HR_WEEKLY_HOLIDAY_DOW = 5; // 0=Sun..6=Sat (5=Fri)
-const HR_MORNING_START = '06:00:00';
-const HR_MORNING_END   = '12:00:00';
-const HR_EVENING_START = '16:00:00';
-const HR_EVENING_END   = '21:00:00';
-const HR_GRACE_MINUTES = 15;
-const HR_WORKDAY_HOURS = 11;
+if (!defined('HR_WEEKLY_HOLIDAY_DOW')) define('HR_WEEKLY_HOLIDAY_DOW', 5);
+if (!defined('HR_MORNING_START')) define('HR_MORNING_START', '06:00:00');
+if (!defined('HR_MORNING_END')) define('HR_MORNING_END', '12:00:00');
+if (!defined('HR_EVENING_START')) define('HR_EVENING_START', '16:00:00');
+if (!defined('HR_EVENING_END')) define('HR_EVENING_END', '21:00:00');
+if (!defined('HR_GRACE_MINUTES')) define('HR_GRACE_MINUTES', 15);
+if (!defined('HR_WORKDAY_HOURS')) define('HR_WORKDAY_HOURS', 11);
 
 function _shift_bounds_for_ts(int $ts): array {
   $day = date('Y-m-d', $ts);

@@ -54,6 +54,10 @@ switch (true) {
   case str_starts_with($path, "settings"):
     require_once __DIR__ . "/settings.php";
     break;
+  case str_starts_with($path, "system-health"):
+  case str_starts_with($path, "system-integrity"):
+    require_once __DIR__ . "/system.php";
+    break;
   case str_starts_with($path, "maintenance"):
     require_once __DIR__ . "/maintenance.php";
     break;

@@ -56,7 +56,7 @@ if ($path === "users" && $method === "POST") {
     $st = $pdo->prepare(
         "INSERT INTO users (username,password,role,is_active,created_at,permissions_json) VALUES (?, ?, ?, 1, NOW(), ?)"
     );
-    $st->execute([$username, $password, $role, json_encode($permissions, JSON_UNESCAPED_UNICODE)]);
+    $st->execute([$username, password_hash($password, PASSWORD_DEFAULT), $role, json_encode($permissions, JSON_UNESCAPED_UNICODE)]);
 
     $newId = (int)$pdo->lastInsertId();
     audit_log($pdo, 'user_created', 'user', $newId, null, [
@@ -112,7 +112,7 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "PUT") {
     foreach (["username", "password", "role"] as $f) {
         if (isset($in[$f])) {
             $fields[] = "$f=?";
-            $values[] = $in[$f];
+            $values[] = ($f === 'password') ? password_hash($in[$f], PASSWORD_DEFAULT) : $in[$f];
         }
     }
 
