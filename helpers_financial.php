@@ -136,7 +136,7 @@ function calculate_payroll_expenses(PDO $pdo, ?string $from, ?string $to): float
                 $total += round(($monthlySalary / 30.0) * $periodDays, 2);
             } elseif ($salaryType === 'hourly' && $hourlyRate > 0) {
                 // Sum actual logged hours
-                $st = $pdo->prepare("SELECT type, ts FROM attendance_logs WHERE user_id=? AND ts>=? AND ts<=? ORDER BY ts ASC");
+                $st = $pdo->prepare("SELECT type, ts, worked_hours FROM attendance_logs WHERE user_id=? AND ts>=? AND ts<=? ORDER BY ts ASC");
                 $st->execute([$uid, $fromDt, $toDt]);
                 $rows = $st->fetchAll(PDO::FETCH_ASSOC);
                 $totalSec = 0;
@@ -147,7 +147,11 @@ function calculate_payroll_expenses(PDO $pdo, ?string $from, ?string $to): float
                     if (!$ts) continue;
                     if ($t === 'in') { $openIn = $ts; }
                     elseif ($t === 'out' && $openIn !== null && $ts > $openIn) {
-                        $totalSec += ($ts - $openIn);
+                        if (isset($r['worked_hours']) && $r['worked_hours'] !== null) {
+                            $totalSec += (float)$r['worked_hours'] * 3600;
+                        } else {
+                            $totalSec += ($ts - $openIn);
+                        }
                         $openIn = null;
                     }
                 }

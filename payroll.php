@@ -76,31 +76,10 @@ try { $pdo->exec("ALTER TABLE users ADD COLUMN hourly_rate DECIMAL(10,2) NULL");
 try { $pdo->exec("ALTER TABLE users ADD COLUMN monthly_salary DECIMAL(10,2) NULL"); } catch (Throwable $e) {}
 try { $pdo->exec("ALTER TABLE users ADD COLUMN salary_type ENUM('hourly','monthly') NULL"); } catch (Throwable $e) {}
 
+require_once __DIR__ . "/attendance_calculator.php";
+
 function compute_hours(PDO $pdo, int $uid, string $from, string $to): float {
-  $st = $pdo->prepare("SELECT type, ts FROM attendance_logs
-                       WHERE user_id=? AND ts>=? AND ts<?
-                       ORDER BY ts ASC, id ASC");
-  $st->execute([$uid, $from, $to]);
-  $rows = $st->fetchAll();
-  $totalSec = 0;
-  $openIn = null;
-  foreach ($rows as $r) {
-    $t = strtolower((string)$r['type']);
-    $ts = strtotime((string)$r['ts']);
-    if (!$ts) continue;
-    if ($t === 'in') {
-      $openIn = $ts;
-    } elseif ($t === 'out') {
-      if ($openIn !== null && $ts > $openIn) {
-        [$shiftStart, $shiftEnd] = _shift_bounds_for_ts($openIn);
-        $startClamped = max($openIn, $shiftStart);
-        $endClamped = min($ts, $shiftEnd);
-        if ($endClamped > $startClamped) $totalSec += ($endClamped - $startClamped);
-      }
-      $openIn = null;
-    }
-  }
-  return round($totalSec / 3600, 2);
+  return compute_hours_engine($pdo, $uid, $from, $to);
 }
 
 function compute_daily_metrics(PDO $pdo, int $uid, string $from, string $to): array {
