@@ -45,6 +45,9 @@ switch (true) {
   case str_starts_with($path, "payroll"):
     require_once __DIR__ . "/payroll.php";
     break;
+  case str_starts_with($path, "migrations"):
+    require_once __DIR__ . "/migrations.php";
+    break;
   case str_starts_with($path, "audit-logs"):
     require_once __DIR__ . "/audit_logs.php";
     break;
