@@ -130,9 +130,26 @@ if ($path === "rents" && $method === "GET") {
     $conds[] = 'r.client_id = ?';
     $params[] = $clientId;
   }
-  if ($status !== '' && in_array($status, ['open','closed','cancelled'], true)) {
-    $conds[] = 'r.status = ?';
-    $params[] = $status;
+  if ($status !== '') {
+    if (in_array($status, ['open','closed','cancelled'], true)) {
+      $conds[] = 'r.status = ?';
+      $params[] = $status;
+    } elseif ($status === 'overdue') {
+      $conds[] = "r.status = 'open' AND TIMESTAMPDIFF(HOUR, r.start_datetime, NOW()) >= 24";
+    } elseif ($status === 'review') {
+      $conds[] = "r.status = 'open' AND TIMESTAMPDIFF(DAY, r.start_datetime, NOW()) >= 7";
+    } elseif ($status === 'deferred') {
+      $conds[] = "r.status = 'closed' AND r.remaining_amount > 0.009";
+    }
+  }
+
+  $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
+  if ($q !== '') {
+    $conds[] = '(c.name LIKE ? OR e.name LIKE ? OR r.notes LIKE ? OR r.id = ?)';
+    $params[] = '%' . $q . '%';
+    $params[] = '%' . $q . '%';
+    $params[] = '%' . $q . '%';
+    $params[] = (int)$q;
   }
 
   // Archive filter: by default hide archived, unless explicitly requested
@@ -145,7 +162,13 @@ if ($path === "rents" && $method === "GET") {
   $where = count($conds) ? ('WHERE ' . implode(' AND ', $conds)) : '';
 
   // Count total for pagination
-  $countSt = $pdo->prepare("SELECT COUNT(*) FROM rents r $where");
+  $countSt = $pdo->prepare("
+    SELECT COUNT(*) 
+    FROM rents r
+    JOIN clients c ON r.client_id = c.id
+    LEFT JOIN equipment e ON r.equipment_id = e.id
+    $where
+  ");
   $countSt->execute($params);
   $total = (int)$countSt->fetchColumn();
 

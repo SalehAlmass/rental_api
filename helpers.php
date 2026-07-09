@@ -282,8 +282,83 @@ function auth_user(): ?array {
   ];
 }
 
-function require_auth(): array {
+function get_jwt_secret(PDO $pdo): string
+{
   global $JWT_SECRET;
+  if ($JWT_SECRET !== "CHANGE_ME_TO_A_LONG_RANDOM_SECRET") {
+    return $JWT_SECRET;
+  }
+  
+  $dbSecret = setting_get($pdo, 'jwt_secret_key');
+  if ($dbSecret === null || trim($dbSecret) === '') {
+    $dbSecret = bin2hex(random_bytes(32));
+    setting_set($pdo, 'jwt_secret_key', $dbSecret);
+  }
+  return $dbSecret;
+}
+
+function check_rate_limit(string $key, int $maxAttempts = 5, int $decaySeconds = 60): void
+{
+  $dir = __DIR__ . '/storage/rate_limits';
+  if (!is_dir($dir)) {
+    @mkdir($dir, 0755, true);
+  }
+  
+  // Garbage Collection: prune old rate limit files with 1% probability
+  if (random_int(1, 100) === 1) {
+    $files = glob($dir . '/*.json');
+    if ($files) {
+      $now = time();
+      foreach ($files as $f) {
+        if ($now - filemtime($f) > 86400) {
+          @unlink($f);
+        }
+      }
+    }
+  }
+
+  $file = $dir . '/' . $key . '.json';
+  $now = time();
+  $data = ['attempts' => 0, 'first_attempt' => $now];
+
+  if (file_exists($file)) {
+    $content = @file_get_contents($file);
+    if ($content) {
+      $decoded = json_decode($content, true);
+      if (is_array($decoded)) {
+        $data = $decoded;
+      }
+    }
+  }
+
+  if ($now - $data['first_attempt'] > $decaySeconds) {
+    $data['attempts'] = 0;
+    $data['first_attempt'] = $now;
+  }
+
+  $data['attempts']++;
+  @file_put_contents($file, json_encode($data));
+
+  if ($data['attempts'] > $maxAttempts) {
+    $retryAfter = $decaySeconds - ($now - $data['first_attempt']);
+    respond([
+      "error" => "محاولات كثيرة خاطئة. يرجى الانتظار " . $retryAfter . " ثانية.",
+      "retry_after" => $retryAfter
+    ], 429);
+  }
+}
+
+function clear_rate_limit(string $key): void
+{
+  $file = __DIR__ . '/storage/rate_limits/' . $key . '.json';
+  if (file_exists($file)) {
+    @unlink($file);
+  }
+}
+
+function require_auth(): array {
+  $pdo = db();
+  $jwtKey = get_jwt_secret($pdo);
 
   $hdr = "";
 
@@ -307,7 +382,7 @@ function require_auth(): array {
   if (!preg_match('/Bearer\s+(.*)$/i', $hdr, $m)) respond(["error"=>"جلسة الدخول غير صالحة، يرجى تسجيل الدخول مرة أخرى."], 401);
 
   $token = trim($m[1]);
-  $payload = jwt_verify($token, $JWT_SECRET);
+  $payload = jwt_verify($token, $jwtKey);
   if (!$payload) respond(["error"=>"رمز الجلسة غير صالح، يرجى تسجيل الدخول مجدداً."], 401);
   if (isset($payload["exp"]) && time() > (int)$payload["exp"]) respond(["error"=>"انتهت صلاحية الجلسة، يرجى تسجيل الدخول مرة أخرى."], 401);
 

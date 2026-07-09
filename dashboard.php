@@ -31,8 +31,8 @@ if ($path === 'dashboard/summary' && $method === 'GET') {
                         FROM payments
                         WHERE type=?
                           AND (is_void=0 OR is_void IS NULL)
-                          AND DATE(created_at) BETWEEN ? AND ?");
-    $st->execute([$type, $from, $to]);
+                          AND created_at BETWEEN ? AND ?");
+    $st->execute([$type, $from . ' 00:00:00', $to . ' 23:59:59']);
     return (float)$st->fetchColumn();
   };
 
@@ -51,7 +51,7 @@ if ($path === 'dashboard/summary' && $method === 'GET') {
   $lastRents = $pdo->query("SELECT r.*, c.name AS client_name, e.name AS equipment_name
                             FROM rents r
                             JOIN clients c ON r.client_id = c.id
-                            JOIN equipment e ON r.equipment_id = e.id
+                            LEFT JOIN equipment e ON r.equipment_id = e.id
                             ORDER BY r.id DESC
                             LIMIT 10")->fetchAll();
 

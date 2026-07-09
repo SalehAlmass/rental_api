@@ -13,6 +13,9 @@ date_default_timezone_set('Asia/Riyadh');
 |--------------------------------------------------------------------------
 */
 if ($path === "auth/login" && $method === "POST") {
+  $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+  $limitKey = 'login_' . md5($ip);
+  check_rate_limit($limitKey, 5, 60);
 
   $in = json_in();
   $username = trim((string)($in["username"] ?? ""));
@@ -56,14 +59,16 @@ if ($path === "auth/login" && $method === "POST") {
     respond(["error" => "بيانات الدخول غير صحيحة"], 401);
   }
 
-  global $JWT_SECRET;
+  clear_rate_limit($limitKey);
+
+  $jwtKey = get_jwt_secret($pdo);
   $expiresAt = time() + 86400; // 24 hours
   $token = jwt_sign([
     "sub"      => (int)$user["id"],
     "username" => $user["username"],
     "role"     => $user["role"],
     "exp"      => $expiresAt
-  ], $JWT_SECRET);
+  ], $jwtKey);
 
   // Register session
   $tokenHash = hash('sha256', $token);
