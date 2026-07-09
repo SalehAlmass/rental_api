@@ -29,7 +29,7 @@ function ensure_attendance_schema(PDO $pdo): void {
   try { $pdo->exec("ALTER TABLE users ADD COLUMN salary_type ENUM('hourly','monthly') NULL"); } catch (Throwable $e) {}
 }
 
-ensure_attendance_schema($pdo);
+// ensure_attendance_schema($pdo);
 
 function _shift_bounds_for_ts(int $ts): array {
   $day = date('Y-m-d', $ts);
@@ -48,7 +48,8 @@ function _expected_in_ts(int $dayTs, string $shift): int {
   return strtotime($day . ' ' . ($shift === 'evening' ? HR_EVENING_START : HR_MORNING_START));
 }
 
-// Ensure schema exists (same as attendance.php but without routes)
+// Ensure schema exists (same as attendance.php but without routes) - Handled via migrations
+/*
 try {
   $pdo->exec("CREATE TABLE IF NOT EXISTS attendance_logs (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -64,6 +65,7 @@ try {
 try { $pdo->exec("ALTER TABLE users ADD COLUMN hourly_rate DECIMAL(10,2) NULL"); } catch (Throwable $e) {}
 try { $pdo->exec("ALTER TABLE users ADD COLUMN monthly_salary DECIMAL(10,2) NULL"); } catch (Throwable $e) {}
 try { $pdo->exec("ALTER TABLE users ADD COLUMN salary_type ENUM('hourly','monthly') NULL"); } catch (Throwable $e) {}
+*/
 
 require_once __DIR__ . "/attendance_calculator.php";
 
@@ -71,13 +73,82 @@ function compute_hours(PDO $pdo, int $uid, string $from, string $to): float {
   return compute_hours_engine($pdo, $uid, $from, $to);
 }
 
-function compute_daily_metrics(PDO $pdo, int $uid, string $from, string $to): array {
-  // first check-in per day (to compute late)
-  $st = $pdo->prepare("SELECT type, ts FROM attendance_logs
-                       WHERE user_id=? AND ts>=? AND ts<=?
-                       ORDER BY ts ASC, id ASC");
-  $st->execute([$uid, $from, $to]);
-  $rows = $st->fetchAll();
+function compute_hours_prefetched(array $rows): float {
+  $totalSec = 0;
+  $openIn = null;
+  $openShift = null;
+  $currentBreaks = [];
+
+  foreach ($rows as $r) {
+    $t = strtolower(trim((string)$r['type']));
+    $ts = strtotime((string)$r['ts']);
+    if (!$ts) continue;
+
+    if ($t === 'in') {
+      $openIn = $ts;
+      $openShift = in_array(($r['shift'] ?? ''), ['morning','evening'], true) ? $r['shift'] : null;
+      $currentBreaks = [];
+    } elseif ($t === 'break_start') {
+      if ($openIn !== null) {
+        $currentBreaks[] = ['start' => $ts, 'end' => null];
+      }
+    } elseif ($t === 'break_end') {
+      if ($openIn !== null && !empty($currentBreaks)) {
+        for ($i = count($currentBreaks) - 1; $i >= 0; $i--) {
+          if ($currentBreaks[$i]['end'] === null) {
+            $currentBreaks[$i]['end'] = $ts;
+            break;
+          }
+        }
+      }
+    } elseif ($t === 'out') {
+      if ($openIn !== null && $ts > $openIn) {
+        if (isset($r['worked_hours']) && $r['worked_hours'] !== null) {
+          $totalSec += (float)$r['worked_hours'] * 3600;
+        } else {
+          for ($i = count($currentBreaks) - 1; $i >= 0; $i--) {
+            if ($currentBreaks[$i]['end'] === null) {
+              $currentBreaks[$i]['end'] = $ts;
+            }
+          }
+          [$shiftStart, $shiftEnd] = attendance_shift_bounds($openIn, $openShift);
+          $startClamped = max($openIn, $shiftStart);
+          $endClamped = min($ts, $shiftEnd);
+          if ($endClamped > $startClamped) {
+            $sessionWorkedSec = $endClamped - $startClamped;
+            $sessionBreakSec = 0;
+            foreach ($currentBreaks as $b) {
+              $bStart = $b['start'];
+              $bEnd = $b['end'] ?? $ts;
+              $bStartClamped = max($bStart, $startClamped);
+              $bEndClamped = min($bEnd, $endClamped);
+              if ($bEndClamped > $bStartClamped) {
+                $sessionBreakSec += ($bEndClamped - $bStartClamped);
+              }
+            }
+            $totalSec += max(0, $sessionWorkedSec - $sessionBreakSec);
+          }
+        }
+      }
+      $openIn = null;
+      $openShift = null;
+      $currentBreaks = [];
+    }
+  }
+  return round($totalSec / 3600, 2);
+}
+
+function compute_daily_metrics(PDO $pdo, int $uid, string $from, string $to, ?array $preFetchedLogs = null): array {
+  if ($preFetchedLogs !== null) {
+    $rows = $preFetchedLogs;
+  } else {
+    // first check-in per day (to compute late)
+    $st = $pdo->prepare("SELECT type, ts, shift, worked_hours FROM attendance_logs
+                         WHERE user_id=? AND ts>=? AND ts<=?
+                         ORDER BY ts ASC, id ASC");
+    $st->execute([$uid, $from, $to]);
+    $rows = $st->fetchAll();
+  }
 
   $firstInByDay = [];
   foreach ($rows as $r) {
@@ -112,7 +183,11 @@ function compute_daily_metrics(PDO $pdo, int $uid, string $from, string $to): ar
     if ($actual > $expected) $lateMinutes += (int)floor(($actual - $expected) / 60);
   }
 
-  $hours = compute_hours($pdo, $uid, $from, date('Y-m-d H:i:s', strtotime($to) + 1));
+  if ($preFetchedLogs !== null) {
+    $hours = compute_hours_prefetched($preFetchedLogs);
+  } else {
+    $hours = compute_hours($pdo, $uid, $from, date('Y-m-d H:i:s', strtotime($to) + 1));
+  }
 
   return [
     'worked_hours' => $hours,
@@ -214,10 +289,22 @@ if ($path === 'payroll/summary' && $method === 'GET') {
   $to = date('Y-m-d 23:59:59', strtotime('last day of ' . $month));
 
   $users = $pdo->query("SELECT id, username, role, hourly_rate, monthly_salary, salary_type FROM users ORDER BY id ASC")->fetchAll();
+  
+  // Batch pre-fetch all logs in the range
+  $stLogs = $pdo->prepare("SELECT user_id, type, ts, shift, worked_hours FROM attendance_logs
+                           WHERE ts>=? AND ts<=?
+                           ORDER BY ts ASC, id ASC");
+  $stLogs->execute([$from, $to]);
+  $logsByUser = [];
+  while ($r = $stLogs->fetch(PDO::FETCH_ASSOC)) {
+    $logsByUser[(int)$r['user_id']][] = $r;
+  }
+
   $items = [];
   foreach ($users as $u) {
     $uid = (int)$u['id'];
-    $metrics = compute_daily_metrics($pdo, $uid, $from, $to);
+    $userLogs = $logsByUser[$uid] ?? [];
+    $metrics = compute_daily_metrics($pdo, $uid, $from, $to, $userLogs);
     $pay = compute_pay($u, $metrics);
     $items[] = array_merge([
       'user_id' => $uid,

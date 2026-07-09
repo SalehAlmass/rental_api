@@ -14,7 +14,7 @@ if ($path === "users" && $method === "GET") {
     $auth = require_auth();
     $pdo = db();
     require_permission($pdo, $auth, 'user_management');
-    ensure_financials_schema($pdo);
+    // ensure_financials_schema($pdo);
     $st = $pdo->query(
         "SELECT id, username, role, is_active, created_at, permissions_json FROM users ORDER BY id DESC"
     );
@@ -121,7 +121,7 @@ if (preg_match("#^users/(\d+)$#", $path, $m) && $method === "PUT") {
         $values[] = (int)$in["is_active"];
     }
 
-    ensure_financials_schema($pdo);
+    // ensure_financials_schema($pdo);
 
     $nextRole = (string)($in['role'] ?? '');
     if ($nextRole === '') {

@@ -9,10 +9,10 @@ $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
 
-// ✅ auto-migrate: rent financial state + idempotency + audit log
-ensure_financials_schema($pdo);
-ensure_depreciation_schema($pdo);
-process_monthly_depreciation($pdo);
+// ✅ auto-migrate: rent financial state + idempotency + audit log (Handled via migrations)
+// ensure_financials_schema($pdo);
+// ensure_depreciation_schema($pdo);
+// process_monthly_depreciation($pdo); // (Disabled in Phase 3 - executed strictly via Cron CLI)
 
 /**
  * Recalculate and persist the rent financial state.
@@ -107,6 +107,8 @@ if ($path === "payments" && $method === "GET") {
   $clientId = isset($_GET['client_id']) ? (int)$_GET['client_id'] : 0;
   $rentId   = isset($_GET['rent_id']) ? (int)$_GET['rent_id'] : 0;
   $userId   = isset($_GET['user_id']) ? (int)$_GET['user_id'] : 0;
+  $page    = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+  $perPage = isset($_GET['per_page']) ? max(1, min(200, (int)$_GET['per_page'])) : 200;
 
   // بناء شروط البحث
   $conds = [];
@@ -142,6 +144,28 @@ if ($path === "payments" && $method === "GET") {
 
   $where = count($conds) ? ("WHERE " . implode(" AND ", $conds)) : "";
 
+  // إجمالي السجلات للترقيم + إحصائيات الدفعات
+  $countSt = $pdo->prepare("SELECT COUNT(*) FROM payments p $where");
+  $countSt->execute($params);
+  $total = (int)$countSt->fetchColumn();
+
+  $sumSt = $pdo->prepare("SELECT
+    COALESCE(SUM(CASE WHEN p.type='in' THEN p.amount ELSE 0 END),0) AS total_in,
+    COALESCE(SUM(CASE WHEN p.type='out' THEN p.amount ELSE 0 END),0) AS total_out
+    FROM payments p $where");
+  $sumSt->execute($params);
+  $summaryRow = $sumSt->fetch();
+  $totalIn  = (float)($summaryRow['total_in'] ?? 0);
+  $totalOut = (float)($summaryRow['total_out'] ?? 0);
+
+  // بناء LIMIT للترقيم
+  if ($perPage > 0) {
+    $offset   = ($page - 1) * $perPage;
+    $limitSql = "LIMIT $perPage OFFSET $offset";
+  } else {
+    $limitSql = '';
+  }
+
   $sql = "SELECT p.*,
                  c.name AS client_name,
                  r.id   AS rent_no,
@@ -153,15 +177,16 @@ if ($path === "payments" && $method === "GET") {
           LEFT JOIN equipment eq ON p.equipment_id = eq.id
           LEFT JOIN users   u ON p.user_id = u.id
           $where
-          ORDER BY p.id DESC";
+          ORDER BY p.id DESC
+          $limitSql";
 
-  if (count($params)) {
-    $st = $pdo->prepare($sql);
-    $st->execute($params);
-    respond($st->fetchAll());
-  }
+  $st  = $pdo->prepare($sql);
+  $st->execute($params);
+  $rows = $st->fetchAll();
 
-  respond($pdo->query($sql)->fetchAll());
+  $pagination = $perPage > 0 ? ["total" => $total, "page" => $page, "per_page" => $perPage] : null;
+  $summary = ["total_in" => $totalIn, "total_out" => $totalOut, "net" => round($totalIn - $totalOut, 2)];
+  respond(["success" => true, "data" => $rows, "pagination" => $pagination, "summary" => $summary], 200);
 }
 
 // POST /payments

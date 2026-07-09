@@ -22,23 +22,92 @@ function input_all(): array {
  * GET /clients
  */
 if ($path === "clients" && $method === "GET") {
+  $page    = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+  $perPage = isset($_GET['per_page']) ? max(1, min(200, (int)$_GET['per_page'])) : 200;
+
+  $countSt = $pdo->query("SELECT COUNT(*) FROM clients");
+  $total   = (int)$countSt->fetchColumn();
+
+  $offset  = ($page - 1) * $perPage;
+
   $sql = "
-    SELECT c.*,
-           IFNULL(debt.total_debt, 0) AS total_debt
-    FROM clients c
-    LEFT JOIN (
-      SELECT client_id, SUM(remaining_amount) AS total_debt
-      FROM rents
-      WHERE remaining_amount > 0
-      GROUP BY client_id
-    ) debt ON debt.client_id = c.id
-    ORDER BY c.id DESC
+    SELECT *
+    FROM clients
+    ORDER BY id DESC
+    LIMIT $perPage OFFSET $offset
   ";
   $rows = $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC);
-  foreach ($rows as &$r) {
-    $r['total_debt'] = (float)($r['total_debt'] ?? 0);
+
+  if (!empty($rows)) {
+    $clientIds = array_column($rows, 'id');
+    $placeholders = implode(',', array_fill(0, count($clientIds), '?'));
+    
+    // Get all rents for these clients
+    $stRents = $pdo->prepare("SELECT id, client_id, status, start_datetime, end_datetime, rate, paid_amount, remaining_amount, discount_amount FROM rents WHERE client_id IN ($placeholders)");
+    $stRents->execute($clientIds);
+    $rents = $stRents->fetchAll(PDO::FETCH_ASSOC);
+
+    // Filter open rents to fetch their items
+    $openRentIds = [];
+    foreach ($rents as $r) {
+      if ($r['status'] === 'open') {
+        $openRentIds[] = (int)$r['id'];
+      }
+    }
+
+    $itemsByRent = [];
+    if (!empty($openRentIds)) {
+      $itemPlaceholders = implode(',', array_fill(0, count($openRentIds), '?'));
+      $stItems = $pdo->prepare("SELECT rent_id, rate, start_datetime, end_datetime, status FROM rent_items WHERE rent_id IN ($itemPlaceholders) AND LOWER(status) != 'replaced'");
+      $stItems->execute($openRentIds);
+      while ($ri = $stItems->fetch(PDO::FETCH_ASSOC)) {
+        $itemsByRent[(int)$ri['rent_id']][] = $ri;
+      }
+    }
+
+    // Include helpers_financial.php for get_billable_days
+    require_once __DIR__ . "/helpers_financial.php";
+
+    $debtByClient = array_fill_keys($clientIds, 0.0);
+    foreach ($rents as $rent) {
+      $clientId = (int)$rent['client_id'];
+      if ($rent['status'] === 'open') {
+        $rentId = (int)$rent['id'];
+        $items = $itemsByRent[$rentId] ?? [];
+        $liveTotal = 0.0;
+        if (!empty($items)) {
+          foreach ($items as $item) {
+            $startStr = $item['start_datetime'] ?? $rent['start_datetime'];
+            $endStr = $item['end_datetime'] ?? null;
+            $rate = (float)($item['rate'] ?? 0);
+            $days = get_billable_days($startStr, $endStr);
+            $liveTotal += $rate * $days;
+          }
+        } else {
+          $startStr = $rent['start_datetime'];
+          $endStr = $rent['end_datetime'] ?? null;
+          $rate = (float)($rent['rate'] ?? 0);
+          $days = get_billable_days($startStr, $endStr);
+          $liveTotal += $rate * $days;
+        }
+        $paid = (float)($rent['paid_amount'] ?? 0);
+        $discount = (float)($rent['discount_amount'] ?? 0);
+        $remaining = max($liveTotal - $discount - $paid, 0.0);
+        $debtByClient[$clientId] += $remaining;
+      } else {
+        $remaining = (float)($rent['remaining_amount'] ?? 0);
+        if ($remaining > 0) {
+          $debtByClient[$clientId] += $remaining;
+        }
+      }
+    }
+
+    foreach ($rows as &$r) {
+      $cid = (int)$r['id'];
+      $r['total_debt'] = round($debtByClient[$cid] ?? 0.0, 2);
+    }
   }
-  respond($rows);
+  respond(["success" => true, "data" => $rows, "pagination" => ["total" => $total, "page" => $page, "per_page" => $perPage]]);
 }
 
 /**

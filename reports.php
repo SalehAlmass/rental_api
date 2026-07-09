@@ -10,7 +10,7 @@ $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
 ensure_financials_schema($pdo);
 ensure_depreciation_schema($pdo);
-process_monthly_depreciation($pdo);
+// process_monthly_depreciation($pdo); // (Disabled on web requests, handled via CLI Cron)
 
 date_default_timezone_set('Asia/Riyadh');
 
@@ -416,9 +416,18 @@ if ($path === "reports/payments" && $method === "GET") {
   $to   = $_GET['to'] ?? null;
   $type = $_GET['type'] ?? 'all';
   $include_void = isset($_GET['include_void']) ? (int)$_GET['include_void'] : 0;
+  $page    = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+  $perPage = isset($_GET['per_page']) ? max(1, min(200, (int)$_GET['per_page'])) : 200;
 
   $params = [];
   $where = _payments_where($from, $to, $type, $include_void, $params);
+
+  $countSt = $pdo->prepare("SELECT COUNT(*) FROM payments p $where");
+  $countSt->execute($params);
+  $total = (int)$countSt->fetchColumn();
+
+  $offset  = ($page - 1) * $perPage;
+  $limitSql = "LIMIT $perPage OFFSET $offset";
 
   $sql = "
     SELECT
@@ -431,6 +440,7 @@ if ($path === "reports/payments" && $method === "GET") {
     LEFT JOIN rents   r ON p.rent_id = r.id
     $where
     ORDER BY p.id DESC
+    $limitSql
   ";
 
   $st = $pdo->prepare($sql);
@@ -462,6 +472,7 @@ if ($path === "reports/payments" && $method === "GET") {
       "net" => (float)($sums['total_in'] ?? 0) - (float)($sums['total_out'] ?? 0),
     ],
     "data" => $rows,
+    "pagination" => ["total" => $total, "page" => $page, "per_page" => $perPage],
   ], 200);
 }
 
@@ -559,14 +570,21 @@ if ($path === 'reports/attendance' && $method === 'GET') {
   };
 
   $users = $pdo->query("SELECT id, username, role FROM users WHERE is_active=1 ORDER BY id ASC")->fetchAll();
+  
+  // Batch pre-fetch all attendance logs in the range
+  $stLogs = $pdo->prepare("SELECT user_id, type, ts FROM attendance_logs
+                           WHERE ts>=? AND ts<=?
+                           ORDER BY ts ASC, id ASC");
+  $stLogs->execute([$from, $to]);
+  $logsByUser = [];
+  while ($r = $stLogs->fetch(PDO::FETCH_ASSOC)) {
+    $logsByUser[(int)$r['user_id']][] = $r;
+  }
+
   $items = [];
   foreach ($users as $u) {
     $uid = (int)$u['id'];
-
-    // first in per day
-    $st = $pdo->prepare("SELECT type, ts FROM attendance_logs WHERE user_id=? AND ts>=? AND ts<=? ORDER BY ts ASC, id ASC");
-    $st->execute([$uid, $from, $to]);
-    $rows = $st->fetchAll();
+    $rows = $logsByUser[$uid] ?? [];
     $firstIn = [];
     foreach ($rows as $r) {
       if (strtolower((string)$r['type']) !== 'in') continue;

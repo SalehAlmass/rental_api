@@ -8,8 +8,8 @@ $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
 
-// ✅ auto-migrate: rent financial state + idempotency + audit log
-ensure_financials_schema($pdo);
+// ✅ auto-migrate: rent financial state + idempotency + audit log (Handled via migrations)
+// ensure_financials_schema($pdo);
 
 /**
  * Compute rent financials from DB (and store them on rents table).
@@ -118,6 +118,8 @@ if ($path === "rents" && $method === "GET") {
   $clientId        = isset($_GET['client_id']) ? (int)$_GET['client_id'] : 0;
   $status          = isset($_GET['status']) ? strtolower(trim((string)$_GET['status'])) : '';
   $limit           = isset($_GET['limit']) ? (int)$_GET['limit'] : 0;
+  $page            = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+  $perPage         = isset($_GET['per_page']) ? max(1, min(200, (int)$_GET['per_page'])) : 0;
   $includeArchived = !empty($_GET['include_archived']);
   $archivedOnly    = !empty($_GET['archived_only']);
 
@@ -141,7 +143,21 @@ if ($path === "rents" && $method === "GET") {
   }
 
   $where = count($conds) ? ('WHERE ' . implode(' AND ', $conds)) : '';
-  $limitSql = ($limit > 0 && $limit <= 200) ? ('LIMIT ' . $limit) : '';
+
+  // Count total for pagination
+  $countSt = $pdo->prepare("SELECT COUNT(*) FROM rents r $where");
+  $countSt->execute($params);
+  $total = (int)$countSt->fetchColumn();
+
+  // Determine limit/offset
+  if ($perPage > 0) {
+    $offset = ($page - 1) * $perPage;
+    $limitSql = 'LIMIT ' . $perPage . ' OFFSET ' . $offset;
+  } elseif ($limit > 0 && $limit <= 200) {
+    $limitSql = 'LIMIT ' . $limit;
+  } else {
+    $limitSql = '';
+  }
 
   $sql = "SELECT r.*,
                  c.name AS client_name,
@@ -157,7 +173,9 @@ if ($path === "rents" && $method === "GET") {
   $st->execute($params);
   $rows = $st->fetchAll(PDO::FETCH_ASSOC);
   attach_rent_items($pdo, $rows);
-  ok($rows);
+
+  $pagination = $perPage > 0 ? ["total" => $total, "page" => $page, "per_page" => $perPage] : null;
+  respond(["success" => true, "data" => $rows, "pagination" => $pagination], 200);
 }
 
 /* -----------------------------------------------------------
@@ -783,6 +801,95 @@ if (preg_match('#^rents/(\d+)/collection-followups$#', $path, $m) && $method ===
   } catch (Throwable $e) {
     respond(["error" => "فشل في حفظ متابعة التحصيل: " . $e->getMessage()], 500);
   }
+}
+
+/*
+|--------------------------------------------------------------------------
+| GET rents/collection-agenda
+| Returns rents needing collection followup (closed + unpaid, not archived).
+| Query params:
+|   sort = oldest | largest | scheduled   (default: oldest)
+|--------------------------------------------------------------------------
+*/
+if ($path === "rents/collection-agenda" && $method === "GET") {
+  $sort = trim((string)($_GET['sort'] ?? 'oldest'));
+
+  // Subquery: latest followup per rent
+  $latestFup = "
+    SELECT cf1.rent_id,
+           cf1.created_at        AS latest_created_at,
+           u1.username           AS latest_created_by_name,
+           cf1.next_followup_at  AS latest_next_followup_at
+    FROM collection_followups cf1
+    LEFT JOIN users u1 ON cf1.created_by_user_id = u1.id
+    WHERE cf1.id = (
+      SELECT MAX(cf2.id)
+      FROM collection_followups cf2
+      WHERE cf2.rent_id = cf1.rent_id
+    )
+  ";
+
+  // Subquery: today's first followup per rent
+  $todayFup = "
+    SELECT cf3.rent_id,
+           cf3.created_at        AS today_created_at,
+           u3.username           AS today_created_by_name
+    FROM collection_followups cf3
+    LEFT JOIN users u3 ON cf3.created_by_user_id = u3.id
+    WHERE cf3.id = (
+      SELECT MIN(cf4.id)
+      FROM collection_followups cf4
+      WHERE cf4.rent_id = cf3.rent_id
+        AND DATE(cf4.created_at) = CURDATE()
+    )
+  ";
+
+  $sql = "
+    SELECT r.id,
+           r.client_id,
+           c.name                AS client_name,
+           e.name                AS equipment_name,
+           r.status,
+           r.remaining_amount,
+           lf.latest_created_at,
+           lf.latest_created_by_name,
+           lf.latest_next_followup_at,
+           tf.today_created_at,
+           tf.today_created_by_name
+    FROM rents r
+    JOIN clients c ON r.client_id = c.id
+    LEFT JOIN equipment e ON r.equipment_id = e.id
+    LEFT JOIN ($latestFup) lf ON lf.rent_id = r.id
+    LEFT JOIN ($todayFup) tf ON tf.rent_id = r.id
+    WHERE r.status = 'closed'
+      AND r.remaining_amount > 0
+      AND r.archived_at IS NULL
+      AND (r.is_paid IS NULL OR r.is_paid = 0)
+  ";
+
+  switch ($sort) {
+    case 'largest':
+      $sql .= " ORDER BY r.remaining_amount DESC, r.closed_at ASC";
+      break;
+    case 'scheduled':
+      $sql .= " ORDER BY lf.latest_next_followup_at ASC, r.remaining_amount DESC";
+      break;
+    default: // oldest
+      $sql .= " ORDER BY r.closed_at ASC, r.remaining_amount DESC";
+  }
+
+  $st = $pdo->prepare($sql);
+  $st->execute();
+  $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+  // Normalize numeric/id fields
+  foreach ($rows as &$r) {
+    $r['id'] = (int)$r['id'];
+    $r['client_id'] = (int)$r['client_id'];
+    $r['remaining_amount'] = (float)$r['remaining_amount'];
+  }
+
+  ok($rows);
 }
 
 respond(["error" => "غير موجود"], 404);

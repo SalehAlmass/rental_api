@@ -340,14 +340,73 @@ function calculate_cash_flow(PDO $pdo, ?string $from, ?string $to): array
     ];
 }
 
+if (!function_exists('get_billable_days')) {
+    function get_billable_days(string $startStr, ?string $endStr): int {
+        $start = strtotime($startStr);
+        if (!$start) return 0;
+        $end = $endStr ? strtotime($endStr) : time();
+        $diffSeconds = $end - $start;
+        $hours = $diffSeconds / 3600.0;
+        $days = (int)ceil($hours / 24.0);
+        return max($days, 1);
+    }
+}
+
 /**
  * Total outstanding amount across all open contracts.
  */
 function calculate_outstanding_amount(PDO $pdo): float
 {
     try {
-        $st = $pdo->query("SELECT COALESCE(SUM(remaining_amount),0) FROM rents WHERE status='open' AND remaining_amount > 0");
-        return (float)$st->fetchColumn();
+        // 1. Outstanding amount of closed contracts (static from remaining_amount)
+        $stClosed = $pdo->query("SELECT COALESCE(SUM(remaining_amount), 0) FROM rents WHERE status != 'open' AND remaining_amount > 0");
+        $closedOutstanding = (float)$stClosed->fetchColumn();
+
+        // 2. Outstanding amount of open contracts (dynamic calculation based on elapsed time)
+        $stOpen = $pdo->query("SELECT id, start_datetime, end_datetime, rate, paid_amount, discount_amount FROM rents WHERE status = 'open'");
+        $openRents = $stOpen->fetchAll(PDO::FETCH_ASSOC);
+
+        if (empty($openRents)) {
+            return round($closedOutstanding, 2);
+        }
+
+        $openRentIds = array_column($openRents, 'id');
+        $itemPlaceholders = implode(',', array_fill(0, count($openRentIds), '?'));
+        $stItems = $pdo->prepare("SELECT rent_id, rate, start_datetime, end_datetime, status FROM rent_items WHERE rent_id IN ($itemPlaceholders) AND LOWER(status) != 'replaced'");
+        $stItems->execute($openRentIds);
+        
+        $itemsByRent = [];
+        while ($ri = $stItems->fetch(PDO::FETCH_ASSOC)) {
+            $itemsByRent[(int)$ri['rent_id']][] = $ri;
+        }
+
+        $openOutstanding = 0.0;
+        foreach ($openRents as $rent) {
+            $rentId = (int)$rent['id'];
+            $items = $itemsByRent[$rentId] ?? [];
+            $liveTotal = 0.0;
+            if (!empty($items)) {
+                foreach ($items as $item) {
+                    $startStr = $item['start_datetime'] ?? $rent['start_datetime'];
+                    $endStr = $item['end_datetime'] ?? null;
+                    $rate = (float)($item['rate'] ?? 0);
+                    $days = get_billable_days($startStr, $endStr);
+                    $liveTotal += $rate * $days;
+                }
+            } else {
+                $startStr = $rent['start_datetime'];
+                $endStr = $rent['end_datetime'] ?? null;
+                $rate = (float)($rent['rate'] ?? 0);
+                $days = get_billable_days($startStr, $endStr);
+                $liveTotal += $rate * $days;
+            }
+            $paid = (float)($rent['paid_amount'] ?? 0);
+            $discount = (float)($rent['discount_amount'] ?? 0);
+            $remaining = max($liveTotal - $discount - $paid, 0.0);
+            $openOutstanding += $remaining;
+        }
+
+        return round($closedOutstanding + $openOutstanding, 2);
     } catch (Throwable $e) {
         return 0.0;
     }

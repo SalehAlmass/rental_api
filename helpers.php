@@ -62,6 +62,7 @@ function ensure_table(PDO $pdo, string $table, string $ddl): void {
  * Safe to call per-request.
  */
 function ensure_financials_schema(PDO $pdo): void {
+  return; // Disabled in runtime requests for performance. Schema is updated via migrations.
   // rents: financial state (single source of truth)
   ensure_column($pdo, 'rents', 'paid_amount', "ALTER TABLE rents ADD COLUMN paid_amount DECIMAL(12,2) NOT NULL DEFAULT 0");
   ensure_column($pdo, 'rents', 'remaining_amount', "ALTER TABLE rents ADD COLUMN remaining_amount DECIMAL(12,2) NOT NULL DEFAULT 0");
@@ -148,6 +149,7 @@ function ensure_financials_schema(PDO $pdo): void {
 }
 
 function ensure_performance_indexes(PDO $pdo): void {
+  return; // Disabled in runtime requests for performance.
   // 1. rents indexes
   ensure_index($pdo, 'rents', 'idx_rents_client_id', "CREATE INDEX idx_rents_client_id ON rents (client_id)");
   ensure_index($pdo, 'rents', 'idx_rents_status', "CREATE INDEX idx_rents_status ON rents (status)");
@@ -509,6 +511,7 @@ function effective_contract_closing_modes(PDO $pdo, ?array $user = null): array
 
 function ensure_depreciation_schema(PDO $pdo): void
 {
+  return; // Disabled in runtime requests for performance.
   ensure_column($pdo, 'equipment', 'purchase_price', "ALTER TABLE equipment ADD COLUMN purchase_price DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER hourly_rate");
   ensure_column($pdo, 'equipment', 'salvage_value', "ALTER TABLE equipment ADD COLUMN salvage_value DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER purchase_price");
   ensure_column($pdo, 'equipment', 'useful_life_months', "ALTER TABLE equipment ADD COLUMN useful_life_months INT NOT NULL DEFAULT 60 AFTER salvage_value");
@@ -585,6 +588,9 @@ function update_equipment_depreciation_snapshot(PDO $pdo, int $equipmentId): voi
 
 function process_monthly_depreciation(PDO $pdo): void
 {
+  if (PHP_SAPI !== 'cli') {
+    return; // Disabled in web requests to prevent N+1 query loop. Run via CLI cron instead.
+  }
   ensure_financials_schema($pdo);
   ensure_depreciation_schema($pdo);
   $month = date('Y-m');
@@ -927,6 +933,7 @@ function copy_backup_to_custom_paths(PDO $pdo, string $sourceFullpath, string $f
 }
 
 function ensure_enterprise_schema(PDO $pdo): void {
+  return; // Disabled in runtime requests for performance.
   // Create tables if not exists
   $pdo->exec("CREATE TABLE IF NOT EXISTS user_sessions (
       id INT AUTO_INCREMENT PRIMARY KEY,

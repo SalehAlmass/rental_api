@@ -51,7 +51,15 @@ function equipment_payload(PDO $pdo, array $in, array $current = []): array {
 }
 
 if ($path === "equipment" && $method === "GET") {
-  $sql = "SELECT * FROM equipment WHERE COALESCE(is_active,1)=1 ORDER BY id DESC";
+  $page    = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+  $perPage = isset($_GET['per_page']) ? max(1, min(200, (int)$_GET['per_page'])) : 200;
+
+  $countSt = $pdo->query("SELECT COUNT(*) FROM equipment WHERE COALESCE(is_active,1)=1");
+  $total   = (int)$countSt->fetchColumn();
+
+  $offset  = ($page - 1) * $perPage;
+
+  $sql = "SELECT * FROM equipment WHERE COALESCE(is_active,1)=1 ORDER BY id DESC LIMIT $perPage OFFSET $offset";
   $rows = $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC) ?: [];
   foreach ($rows as &$row) {
     $vals = depreciation_compute_values($row);
@@ -61,7 +69,7 @@ if ($path === "equipment" && $method === "GET") {
       $row['book_value'] = $vals['book_value'];
     }
   }
-  respond($rows);
+  respond(["success" => true, "data" => $rows, "pagination" => ["total" => $total, "page" => $page, "per_page" => $perPage]]);
 }
 
 if ($path === "equipment" && $method === "POST") {

@@ -34,7 +34,7 @@ function ensure_shift_closings_schema(PDO $pdo) {
   }
 }
 
-ensure_shift_closings_schema($pdo);
+// ensure_shift_closings_schema($pdo);
 
 /**
  * Validate date format YYYY-MM-DD
