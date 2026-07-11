@@ -17,7 +17,11 @@ ensure_financials_schema($pdo);
 |--------------------------------------------------------------------------
 */
 if ($path === "settings/admin-alerts" && $method === "GET") {
-  require_permission($pdo, $auth, 'settings');
+  if (!has_permission($pdo, $auth, 'settings') && 
+      !has_permission($pdo, $auth, 'admin_monitoring') && 
+      !has_permission($pdo, $auth, 'notifications')) {
+    respond(["error" => "ممنوع: ليس لديك صلاحية الوصول إلى هذه العملية"], 403);
+  }
   $days  = max(1, min(90, (int)($_GET['days'] ?? 7)));
   $limit = max(1, min(100, (int)($_GET['limit'] ?? 20)));
   $since = date('Y-m-d 00:00:00', strtotime("-{$days} days"));
@@ -199,7 +203,9 @@ if ($path === "settings/admin-alerts" && $method === "GET") {
 |--------------------------------------------------------------------------
 */
 if ($path === "settings/team-monitoring" && $method === "GET") {
-  require_permission($pdo, $auth, 'hr');
+  if (!has_permission($pdo, $auth, 'hr') && !has_permission($pdo, $auth, 'team_monitoring')) {
+    respond(["error" => "ممنوع: ليس لديك صلاحية الوصول إلى هذه العملية"], 403);
+  }
   $days = max(1, min(90, (int)($_GET['days'] ?? 14)));
   $since = date('Y-m-d 00:00:00', strtotime("-{$days} days"));
 
@@ -327,7 +333,9 @@ if ($path === "settings/team-monitoring" && $method === "GET") {
 |--------------------------------------------------------------------------
 */
 if ($path === "settings/contract-closing" && $method === "GET") {
-  require_permission($pdo, $auth, 'settings');
+  if (!has_permission($pdo, $auth, 'settings') && !has_permission($pdo, $auth, 'contract_closing_settings')) {
+    respond(["error" => "ممنوع: ليس لديك صلاحية الوصول إلى هذه العملية"], 403);
+  }
   try {
     $st = $pdo->query("SELECT * FROM system_settings WHERE setting_key LIKE 'closing_%' ORDER BY id");
     $rows = $st->fetchAll(PDO::FETCH_ASSOC);
@@ -342,7 +350,9 @@ if ($path === "settings/contract-closing" && $method === "GET") {
 }
 
 if ($path === "settings/contract-closing" && $method === "PUT") {
-  require_permission($pdo, $auth, 'settings');
+  if (!has_permission($pdo, $auth, 'settings') && !has_permission($pdo, $auth, 'contract_closing_settings')) {
+    respond(["error" => "ممنوع: ليس لديك صلاحية الوصول إلى هذه العملية"], 403);
+  }
   $in = json_in();
   try {
     // Ensure system_settings table exists

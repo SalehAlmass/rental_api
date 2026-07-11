@@ -9,9 +9,9 @@ $path = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo = db();
 
-// Health and integrity screens are strictly admin-only
-if (strtolower((string)($auth["role"] ?? "")) !== "admin") {
-  respond(["error" => "ممنوع: هذه لوحة إدارية فقط"], 403);
+// Health and integrity screens are strictly admin-only (or anyone with system_health permission)
+if (strtolower((string)($auth["role"] ?? "")) !== "admin" && !has_permission($pdo, $auth, 'system_health')) {
+  respond(["error" => "ممنوع: ليس لديك صلاحية الوصول إلى هذه العملية (system_health)"], 403);
 }
 
 /*

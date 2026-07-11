@@ -9,11 +9,12 @@ $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
 
-// Access check: holds either 'equipment' or 'reports' screen permission
+// Access check: holds either 'equipment', 'reports' or 'depreciation_logs' screen permission
 $hasEquipment = has_permission($pdo, $auth, 'equipment');
 $hasReports = has_permission($pdo, $auth, 'reports');
+$hasDepreciationLogs = has_permission($pdo, $auth, 'depreciation_logs');
 
-if (!$hasEquipment && !$hasReports) {
+if (!$hasEquipment && !$hasReports && !$hasDepreciationLogs) {
   respond(["error" => "ممنوع: ليس لديك الصلاحية الكافية للوصول إلى سجل الإهلاك"], 403);
 }
 
