@@ -7,8 +7,27 @@ function json_in(): array {
   return is_array($data) ? $data : [];
 }
 
+function format_datetimes_to_12h($data) {
+  if (is_array($data)) {
+    foreach ($data as $k => $v) {
+      $data[$k] = format_datetimes_to_12h($v);
+    }
+  } elseif (is_string($data)) {
+    // Match MySQL DATETIME format YYYY-MM-DD HH:MM:SS
+    if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $data)) {
+      $data = date('Y-m-d h:i A', strtotime($data));
+    }
+    // Match MySQL TIME format HH:MM:SS
+    elseif (preg_match('/^\d{2}:\d{2}:\d{2}$/', $data)) {
+      $data = date('h:i A', strtotime($data));
+    }
+  }
+  return $data;
+}
+
 function respond($data, int $code=200): void {
   http_response_code($code);
+  $data = format_datetimes_to_12h($data);
   echo json_encode($data, JSON_UNESCAPED_UNICODE);
   exit;
 }
