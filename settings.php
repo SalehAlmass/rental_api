@@ -17,6 +17,7 @@ ensure_financials_schema($pdo);
 |--------------------------------------------------------------------------
 */
 if ($path === "settings/admin-alerts" && $method === "GET") {
+  require_permission($pdo, $auth, 'settings');
   $days  = max(1, min(90, (int)($_GET['days'] ?? 7)));
   $limit = max(1, min(100, (int)($_GET['limit'] ?? 20)));
   $since = date('Y-m-d 00:00:00', strtotime("-{$days} days"));
@@ -198,6 +199,7 @@ if ($path === "settings/admin-alerts" && $method === "GET") {
 |--------------------------------------------------------------------------
 */
 if ($path === "settings/team-monitoring" && $method === "GET") {
+  require_permission($pdo, $auth, 'hr');
   $days = max(1, min(90, (int)($_GET['days'] ?? 14)));
   $since = date('Y-m-d 00:00:00', strtotime("-{$days} days"));
 

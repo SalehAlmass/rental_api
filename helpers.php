@@ -480,7 +480,8 @@ function normalize_user_permissions($raw, ?string $role = null): array
       'payments' => true, 'receipts' => true, 'reports' => true, 'hr' => true,
       'attendance' => true, 'shifts' => true, 'backup' => true, 'settings' => true,
       'user_management' => true, 'print' => true, 'export' => true, 'audit_logs' => true,
-      'financial_reports' => true,
+      'financial_reports' => true, 'shifts_monitoring' => true,
+      'attendance_dashboard' => true, 'attendance_manage' => true,
     ];
   } elseif (strtolower((string)$role) === 'manager') {
     $screenDefaults = [
@@ -488,7 +489,8 @@ function normalize_user_permissions($raw, ?string $role = null): array
       'payments' => true, 'receipts' => true, 'reports' => true, 'hr' => true,
       'attendance' => true, 'shifts' => true, 'backup' => true, 'settings' => true,
       'user_management' => false, 'print' => true, 'export' => true, 'audit_logs' => false,
-      'financial_reports' => true,
+      'financial_reports' => true, 'shifts_monitoring' => true,
+      'attendance_dashboard' => true, 'attendance_manage' => true,
     ];
   } else { // employee
     $screenDefaults = [
@@ -496,7 +498,8 @@ function normalize_user_permissions($raw, ?string $role = null): array
       'payments' => true, 'receipts' => true, 'reports' => false, 'hr' => false,
       'attendance' => true, 'shifts' => true, 'backup' => false, 'settings' => false,
       'user_management' => false, 'print' => true, 'export' => true, 'audit_logs' => false,
-      'financial_reports' => false,
+      'financial_reports' => false, 'shifts_monitoring' => false,
+      'attendance_dashboard' => false, 'attendance_manage' => false,
     ];
   }
 

@@ -7,6 +7,8 @@ $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
 
+require_permission($pdo, $auth, 'shifts');
+
 date_default_timezone_set('Asia/Riyadh');
 
 

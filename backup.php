@@ -8,6 +8,8 @@ $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
 
+require_permission($pdo, $auth, 'backup');
+
 date_default_timezone_set('Asia/Riyadh');
 
 // مكان حفظ النسخ

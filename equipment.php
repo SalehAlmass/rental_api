@@ -2,10 +2,12 @@
 require_once __DIR__ . "/config.php";
 require_once __DIR__ . "/helpers.php";
 
-require_auth();
+$auth = require_auth();
 $pdo = db();
 $path = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
+
+require_permission($pdo, $auth, 'equipment');
 
 ensure_financials_schema($pdo);
 ensure_depreciation_schema($pdo);

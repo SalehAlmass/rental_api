@@ -114,7 +114,9 @@ if ($path === "payments" && $method === "GET") {
   $conds = [];
   $params = [];
 
-  if (!$hasPayments && $hasReceipts) {
+  if ($hasPayments && !$hasReceipts) {
+    $conds[] = "(p.type = 'out' OR p.type = 'depreciation')";
+  } elseif (!$hasPayments && $hasReceipts) {
     $conds[] = "p.type = 'in'";
   }
 

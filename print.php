@@ -7,6 +7,8 @@ $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
 
+require_permission($pdo, $auth, 'print');
+
 function is_ymd($s) {
   return is_string($s) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $s);
 }

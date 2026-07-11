@@ -8,6 +8,8 @@ $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
 
+require_permission($pdo, $auth, 'attendance');
+
 // -----------------------------------------------------------------------------
 // Schema (auto-migrate)
 // -----------------------------------------------------------------------------
@@ -837,8 +839,7 @@ function compute_pay(PDO $pdo, array $userRow, array $metrics): array {
 }
 
 if ($path === 'attendance/admin' && $method === 'GET') {
-  if (strtolower((string)($auth['role'] ?? '')) !== 'admin' &&
-      !has_permission($pdo, $auth, 'attendance_dashboard') &&
+  if (!has_permission($pdo, $auth, 'attendance_dashboard') &&
       !has_permission($pdo, $auth, 'attendance_manage') &&
       !has_permission($pdo, $auth, 'hr')) {
     respond(['success'=>false,'error'=>'ممنوع'], 403);
@@ -1028,7 +1029,9 @@ if ($path === 'attendance/admin' && $method === 'GET') {
 
 // GET attendance/summary?month=YYYY-MM  (Admin)
 if ($path === 'attendance/summary' && $method === 'GET') {
-  if (strtolower((string)$auth['role']) !== 'admin') {
+  if (!has_permission($pdo, $auth, 'hr') &&
+      !has_permission($pdo, $auth, 'attendance_dashboard') &&
+      !has_permission($pdo, $auth, 'attendance_manage')) {
     respond(['success'=>false, 'error'=>'ممنوع'], 403);
   }
   $month = trim((string)($_GET['month'] ?? ''));

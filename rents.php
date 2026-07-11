@@ -2,11 +2,13 @@
 require_once __DIR__ . "/config.php";
 require_once __DIR__ . "/helpers.php";
 
-require_auth();
+$auth = require_auth();
 
 $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
+
+require_permission($pdo, $auth, 'rents');
 
 // ✅ auto-migrate: rent financial state + idempotency + audit log (Handled via migrations)
 // ensure_financials_schema($pdo);

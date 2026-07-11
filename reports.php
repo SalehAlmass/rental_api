@@ -8,6 +8,8 @@ $auth   = require_auth();
 $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
+
+require_permission($pdo, $auth, 'reports');
 ensure_financials_schema($pdo);
 ensure_depreciation_schema($pdo);
 // process_monthly_depreciation($pdo); // (Disabled on web requests, handled via CLI Cron)

@@ -280,9 +280,7 @@ if ($path === 'payroll/me' && $method === 'GET') {
 
 // GET payroll/summary?month=YYYY-MM (Admin)
 if ($path === 'payroll/summary' && $method === 'GET') {
-  if (strtolower((string)$auth['role']) !== 'admin') {
-    respond(['success'=>false, 'error'=>'ممنوع'], 403);
-  }
+  require_permission($pdo, $auth, 'hr');
   $month = trim((string)($_GET['month'] ?? ''));
   if ($month === '') $month = date('Y-m');
   $from = date('Y-m-01 00:00:00', strtotime($month . '-01'));
@@ -326,9 +324,7 @@ if ($path === 'payroll/summary' && $method === 'GET') {
 
 // PUT payroll/user/{id} (Admin) - update salary settings
 if (preg_match('#^payroll/user/(\\d+)$#', $path, $m) && $method === 'PUT') {
-  if (strtolower((string)$auth['role']) !== 'admin') {
-    respond(['success'=>false, 'error'=>'ممنوع'], 403);
-  }
+  require_permission($pdo, $auth, 'hr');
   $uid = (int)$m[1];
   $in = json_in();
   if (!$in) $in = $_POST;
