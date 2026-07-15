@@ -184,6 +184,15 @@ if ($path === "rents" && $method === "GET") {
     $limitSql = '';
   }
 
+  $allowedSorts = [
+    'id' => 'r.id',
+    'client_name' => 'c.name',
+    'start_datetime' => 'r.start_datetime',
+    'end_datetime' => 'r.end_datetime',
+    'status' => 'r.status'
+  ];
+  $sortSql = get_sort_sql($allowedSorts, 'id', 'desc', 'r.id DESC');
+
   $sql = "SELECT r.*,
                  c.name AS client_name,
                  e.name AS equipment_name
@@ -191,7 +200,7 @@ if ($path === "rents" && $method === "GET") {
           JOIN clients c ON r.client_id = c.id
           LEFT JOIN equipment e ON r.equipment_id = e.id
           $where
-          ORDER BY r.id DESC
+          $sortSql
           $limitSql";
 
   $st = $pdo->prepare($sql);

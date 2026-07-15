@@ -431,6 +431,15 @@ if ($path === "reports/payments" && $method === "GET") {
   $offset  = ($page - 1) * $perPage;
   $limitSql = "LIMIT $perPage OFFSET $offset";
 
+  $allowedSorts = [
+    'id' => 'p.id',
+    'created_at' => 'p.created_at',
+    'amount' => 'p.amount',
+    'type' => 'p.type',
+    'client_name' => 'c.name'
+  ];
+  $sortSql = get_sort_sql($allowedSorts, 'id', 'desc', 'p.id DESC');
+
   $sql = "
     SELECT
       p.id, p.type, p.amount, p.method, p.reference_no, p.notes, p.created_at,
@@ -441,7 +450,7 @@ if ($path === "reports/payments" && $method === "GET") {
     LEFT JOIN clients c ON p.client_id = c.id
     LEFT JOIN rents   r ON p.rent_id = r.id
     $where
-    ORDER BY p.id DESC
+    $sortSql
     $limitSql
   ";
 

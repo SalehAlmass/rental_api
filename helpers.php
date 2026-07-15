@@ -375,6 +375,7 @@ function clear_rate_limit(string $key): void
   }
 }
 
+if (!function_exists('require_auth')) {
 function require_auth(): array {
   $pdo = db();
   $jwtKey = get_jwt_secret($pdo);
@@ -427,6 +428,7 @@ function require_auth(): array {
   $GLOBALS['auth_token_hash'] = $tokenHash;
 
   return $payload;
+}
 }
 
 function setting_get(PDO $pdo, string $key, ?string $default = null): ?string
@@ -1224,5 +1226,40 @@ if (php_sapi_name() !== 'cli') {
     }
     return false;
   });
+}
+
+function get_sort_sql(array $allowedMap, string $defaultSortField, string $defaultSortOrder, string $secondaryOrder = ''): string {
+  $sortBy = isset($_GET['sort_by']) ? trim((string)$_GET['sort_by']) : '';
+  $sortOrder = isset($_GET['sort_order']) ? strtolower(trim((string)$_GET['sort_order'])) : '';
+
+  if ($sortOrder !== 'asc' && $sortOrder !== 'desc') {
+    $sortOrder = strtolower($defaultSortOrder);
+  }
+
+  $sortColumn = $allowedMap[$sortBy] ?? $allowedMap[$defaultSortField] ?? null;
+  if ($sortColumn === null) {
+    $sortColumn = reset($allowedMap);
+  }
+
+  // Appending collation for text fields (Arabic sorting support)
+  $isText = false;
+  $textKeywords = ['name', 'notes', 'username', 'serial', 'phone', 'action', 'entity', 'status'];
+  foreach ($textKeywords as $keyword) {
+    if (strpos(strtolower($sortColumn), $keyword) !== false) {
+      $isText = true;
+      break;
+    }
+  }
+
+  $colExpr = $sortColumn;
+  if ($isText) {
+    $colExpr = "$sortColumn COLLATE utf8mb4_unicode_ci";
+  }
+
+  $sql = "ORDER BY $colExpr " . strtoupper($sortOrder);
+  if ($secondaryOrder !== '') {
+    $sql .= ", " . $secondaryOrder;
+  }
+  return $sql;
 }
 

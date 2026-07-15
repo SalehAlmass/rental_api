@@ -48,7 +48,16 @@ if ($path === "clients" && $method === "GET") {
 
   $offset  = ($page - 1) * $perPage;
 
-  $sql = "SELECT * FROM clients $where ORDER BY id DESC LIMIT $perPage OFFSET $offset";
+  $allowedSorts = [
+    'name' => 'name',
+    'phone' => 'phone',
+    'national_id' => 'national_id',
+    'created_at' => 'created_at',
+    'id' => 'id'
+  ];
+  $sortSql = get_sort_sql($allowedSorts, 'id', 'desc', 'id DESC');
+
+  $sql = "SELECT * FROM clients $where $sortSql LIMIT $perPage OFFSET $offset";
   $stmt = $pdo->prepare($sql);
   $stmt->execute($params);
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];

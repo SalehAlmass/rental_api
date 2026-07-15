@@ -83,7 +83,16 @@ if ($path === "equipment" && $method === "GET") {
 
   $offset  = ($page - 1) * $perPage;
 
-  $sql = "SELECT * FROM equipment $where ORDER BY id DESC LIMIT $perPage OFFSET $offset";
+  $allowedSorts = [
+    'name' => 'name',
+    'serial_no' => 'serial_no',
+    'created_at' => 'created_at',
+    'status' => 'status',
+    'id' => 'id'
+  ];
+  $sortSql = get_sort_sql($allowedSorts, 'id', 'desc', 'id DESC');
+
+  $sql = "SELECT * FROM equipment $where $sortSql LIMIT $perPage OFFSET $offset";
   $stmt = $pdo->prepare($sql);
   $stmt->execute($params);
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];

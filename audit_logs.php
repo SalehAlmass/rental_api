@@ -64,11 +64,20 @@ if ($path === "audit-logs" && $method === "GET") {
   $total = (int)$stCount->fetchColumn();
 
   // 2. Fetch paginated records
+  $allowedSorts = [
+    'created_at' => 'al.created_at',
+    'user' => 'u.username',
+    'action' => 'al.action',
+    'entity' => 'al.entity',
+    'id' => 'al.id'
+  ];
+  $sortSql = get_sort_sql($allowedSorts, 'id', 'desc', 'al.id DESC');
+
   $sql = "SELECT al.*, u.username AS username
           FROM audit_logs al
           LEFT JOIN users u ON al.user_id = u.id
           $where
-          ORDER BY al.created_at DESC, al.id DESC
+          $sortSql
           LIMIT $limit OFFSET $offset";
   
   $st = $pdo->prepare($sql);

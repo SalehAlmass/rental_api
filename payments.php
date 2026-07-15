@@ -179,6 +179,15 @@ if ($path === "payments" && $method === "GET") {
     $limitSql = '';
   }
 
+  $allowedSorts = [
+    'id' => 'p.id',
+    'created_at' => 'p.created_at',
+    'amount' => 'p.amount',
+    'type' => 'p.type',
+    'client_name' => 'c.name'
+  ];
+  $sortSql = get_sort_sql($allowedSorts, 'id', 'desc', 'p.id DESC');
+
   $sql = "SELECT p.*,
                  c.name AS client_name,
                  r.id   AS rent_no,
@@ -190,7 +199,7 @@ if ($path === "payments" && $method === "GET") {
           LEFT JOIN equipment eq ON p.equipment_id = eq.id
           LEFT JOIN users   u ON p.user_id = u.id
           $where
-          ORDER BY p.id DESC
+          $sortSql
           $limitSql";
 
   $st  = $pdo->prepare($sql);
