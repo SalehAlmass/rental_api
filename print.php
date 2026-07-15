@@ -169,4 +169,163 @@ if ($path === "print/client-statement" && $method === "GET") {
   ], 200);
 }
 
+/**
+ * GET print/payments-report?from=YYYY-MM-DD&to=YYYY-MM-DD&type=in|out|all
+ * Returns printable HTML of payments report containing all matching items
+ */
+if ($path === "print/payments-report" && $method === "GET") {
+  $from = $_GET['from'] ?? null;
+  $to   = $_GET['to'] ?? null;
+  $type = $_GET['type'] ?? 'all';
+  $include_void = isset($_GET['include_void']) ? (int)$_GET['include_void'] : 0;
+
+  $params = [];
+  $conds = [];
+  if ($from) {
+    $conds[] = "p.created_at >= ?";
+    $params[] = $from . " 00:00:00";
+  }
+  if ($to) {
+    $conds[] = "p.created_at <= ?";
+    $params[] = $to . " 23:59:59";
+  }
+  if ($type === 'in' || $type === 'out') {
+    $conds[] = "p.type = ?";
+    $params[] = $type;
+  }
+  if (!$include_void) {
+    $conds[] = "p.is_void = 0";
+  }
+  
+  $where = count($conds) ? ("WHERE " . implode(" AND ", $conds)) : "";
+
+  $sql = "
+    SELECT
+      p.id, p.type, p.amount, p.method, p.reference_no, p.notes, p.created_at,
+      c.name AS client_name, r.id AS rent_no
+    FROM payments p
+    LEFT JOIN clients c ON p.client_id = c.id
+    LEFT JOIN rents   r ON p.rent_id = r.id
+    $where
+    ORDER BY p.id DESC
+  ";
+
+  $st = $pdo->prepare($sql);
+  $st->execute($params);
+  $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+  $totalIn = 0.0;
+  $totalOut = 0.0;
+  foreach ($rows as $row) {
+    if ($row['type'] === 'in') {
+      $totalIn += (float)$row['amount'];
+    } else {
+      $totalOut += (float)$row['amount'];
+    }
+  }
+  $net = $totalIn - $totalOut;
+
+  header('Content-Type: text/html; charset=utf-8');
+  ?>
+  <!DOCTYPE html>
+  <html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8">
+    <title>تقرير السندات المالية</title>
+    <style>
+      body { font-family: 'Cairo', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; color: #333; }
+      .header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; }
+      .header h1 { margin: 5px 0; font-size: 24px; }
+      .header p { margin: 5px 0; font-size: 14px; color: #666; }
+      .summary-boxes { display: flex; justify-content: space-between; margin-bottom: 20px; gap: 10px; }
+      .summary-box { flex: 1; padding: 15px; border: 1px solid #ccc; border-radius: 6px; text-align: center; background: #fafafa; }
+      .summary-box h3 { margin: 0 0 8px 0; font-size: 14px; color: #555; }
+      .summary-box p { margin: 0; font-size: 20px; font-weight: bold; }
+      .summary-box.in p { color: green; }
+      .summary-box.out p { color: red; }
+      .summary-box.net p { color: blue; }
+      table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+      th, td { border: 1px solid #ddd; padding: 10px; text-align: right; font-size: 13px; }
+      th { background-color: #f2f2f2; font-weight: bold; }
+      tr:nth-child(even) { background-color: #fafafa; }
+      .badge { display: inline-block; padding: 3px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; color: white; }
+      .badge.in { background-color: green; }
+      .badge.out { background-color: red; }
+      @media print {
+        body { margin: 0; }
+        .no-print { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="no-print" style="margin-bottom: 15px; text-align: left;">
+      <button onclick="window.print()" style="padding: 8px 16px; font-size: 14px; font-weight: bold; cursor: pointer;">طباعة التقرير</button>
+    </div>
+    <div class="header">
+      <h1>مؤسسة الخير لتأجير المعدات</h1>
+      <p>تقرير السندات والتدفقات النقدية</p>
+      <p>الفترة من: <?php echo htmlspecialchars($from ?? 'بداية النشاط'); ?> إلى: <?php echo htmlspecialchars($to ?? date('Y-m-d')); ?></p>
+    </div>
+    <div class="summary-boxes">
+      <div class="summary-box in">
+        <h3>إجمالي المقبوضات (سندات القبض)</h3>
+        <p><?php echo number_format($totalIn, 2); ?> ر.س</p>
+      </div>
+      <div class="summary-box out">
+        <h3>إجمالي المصروفات (سندات الصرف)</h3>
+        <p><?php echo number_format($totalOut, 2); ?> ر.س</p>
+      </div>
+      <div class="summary-box net">
+        <h3>صافي الدخل</h3>
+        <p><?php echo number_format($net, 2); ?> ر.س</p>
+      </div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>رقم السند</th>
+          <th>تاريخ السند</th>
+          <th>النوع</th>
+          <th>العميل</th>
+          <th>رقم العقد</th>
+          <th>طريقة الدفع</th>
+          <th>رقم المرجع</th>
+          <th>المبلغ</th>
+          <th>ملاحظات</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php if (empty($rows)): ?>
+          <tr>
+            <td colspan="9" style="text-align: center; color: #888;">لا توجد سندات مالية مسجلة للفترة المحددة.</td>
+          </tr>
+        <?php else: ?>
+          <?php foreach ($rows as $r): ?>
+            <tr>
+              <td>#<?php echo $r['id']; ?></td>
+              <td><?php echo htmlspecialchars($r['created_at']); ?></td>
+              <td>
+                <span class="badge <?php echo $r['type']; ?>">
+                  <?php echo $r['type'] === 'in' ? 'قبض' : 'صرف'; ?>
+                </span>
+              </td>
+              <td><?php echo htmlspecialchars($r['client_name'] ?? 'عام / غير محدد'); ?></td>
+              <td><?php echo $r['rent_no'] ? '#'.$r['rent_no'] : '-'; ?></td>
+              <td><?php echo htmlspecialchars($r['method']); ?></td>
+              <td><?php echo htmlspecialchars($r['reference_no'] ?? '-'); ?></td>
+              <td style="font-weight: bold; color: <?php echo $r['type'] === 'in' ? 'green' : 'red'; ?>;">
+                <?php echo number_format((float)$r['amount'], 2); ?>
+              </td>
+              <td><?php echo htmlspecialchars($r['notes'] ?? ''); ?></td>
+            </tr>
+          <?php endforeach; ?>
+        <?php endif; ?>
+      </tbody>
+    </table>
+  </body>
+  </html>
+  <?php
+  exit;
+}
+
 respond(["error"=>"غير موجود"], 404);

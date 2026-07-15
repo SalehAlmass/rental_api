@@ -56,38 +56,13 @@ if ($path === "equipment" && $method === "GET") {
   $page    = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
   $perPage = isset($_GET['per_page']) ? max(1, min(200, (int)$_GET['per_page'])) : 200;
 
-  $conds = ["COALESCE(is_active,1)=1"];
-  $params = [];
-
-  $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
-  if ($q !== '') {
-    $conds[] = "(MATCH(name) AGAINST(? IN BOOLEAN MODE) OR name LIKE ? OR model LIKE ? OR serial_no LIKE ? OR id = ?)";
-    $params[] = $q . "*";
-    $params[] = "%" . $q . "%";
-    $params[] = "%" . $q . "%";
-    $params[] = "%" . $q . "%";
-    $params[] = is_numeric($q) ? (int)$q : 0;
-  }
-
-  $status = isset($_GET['status']) ? trim((string)$_GET['status']) : '';
-  if ($status !== '' && $status !== 'all') {
-    $conds[] = "status = ?";
-    $params[] = $status;
-  }
-
-  $where = "WHERE " . implode(" AND ", $conds);
-
-  $countSt = $pdo->prepare("SELECT COUNT(*) FROM equipment $where");
-  $countSt->execute($params);
+  $countSt = $pdo->query("SELECT COUNT(*) FROM equipment WHERE COALESCE(is_active,1)=1");
   $total   = (int)$countSt->fetchColumn();
 
   $offset  = ($page - 1) * $perPage;
 
-  $sql = "SELECT * FROM equipment $where ORDER BY id DESC LIMIT $perPage OFFSET $offset";
-  $stmt = $pdo->prepare($sql);
-  $stmt->execute($params);
-  $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-
+  $sql = "SELECT * FROM equipment WHERE COALESCE(is_active,1)=1 ORDER BY id DESC LIMIT $perPage OFFSET $offset";
+  $rows = $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC) ?: [];
   foreach ($rows as &$row) {
     $vals = depreciation_compute_values($row);
     $row['depreciation_monthly'] = $vals['depreciation_monthly'];

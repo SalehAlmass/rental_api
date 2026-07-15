@@ -15,8 +15,7 @@ require_permission($pdo, $auth, 'audit_logs');
 // ONLY GET is allowed (Immutability: no update or delete endpoint)
 if ($path === "audit-logs" && $method === "GET") {
   $limit  = isset($_GET['limit']) ? max(1, min(100, (int)$_GET['limit'])) : 20; // Pagination security: max limit = 100
-  $page   = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
-  $offset = isset($_GET['offset']) ? max(0, (int)$_GET['offset']) : (($page - 1) * $limit);
+  $offset = isset($_GET['offset']) ? max(0, (int)$_GET['offset']) : 0;
   
   $from   = $_GET['from'] ?? null;
   $to     = $_GET['to'] ?? null;

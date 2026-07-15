@@ -144,28 +144,17 @@ if ($path === "payments" && $method === "GET") {
     $params[] = $to . " 23:59:59";
   }
 
-  $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
-  if ($q !== '') {
-    $conds[] = "(c.name LIKE ? OR p.reference_no LIKE ? OR p.notes LIKE ? OR p.id = ? OR p.rent_id = ?)";
-    $params[] = "%$q%";
-    $params[] = "%$q%";
-    $params[] = "%$q%";
-    $params[] = is_numeric($q) ? (int)$q : 0;
-    $params[] = is_numeric($q) ? (int)$q : 0;
-  }
-
   $where = count($conds) ? ("WHERE " . implode(" AND ", $conds)) : "";
-  $joinSql = "LEFT JOIN clients c ON p.client_id = c.id";
 
   // إجمالي السجلات للترقيم + إحصائيات الدفعات
-  $countSt = $pdo->prepare("SELECT COUNT(*) FROM payments p $joinSql $where");
+  $countSt = $pdo->prepare("SELECT COUNT(*) FROM payments p $where");
   $countSt->execute($params);
-  $total   = (int)$countSt->fetchColumn();
+  $total = (int)$countSt->fetchColumn();
 
   $sumSt = $pdo->prepare("SELECT
     COALESCE(SUM(CASE WHEN p.type='in' THEN p.amount ELSE 0 END),0) AS total_in,
     COALESCE(SUM(CASE WHEN p.type='out' THEN p.amount ELSE 0 END),0) AS total_out
-    FROM payments p $joinSql $where");
+    FROM payments p $where");
   $sumSt->execute($params);
   $summaryRow = $sumSt->fetch();
   $totalIn  = (float)($summaryRow['total_in'] ?? 0);

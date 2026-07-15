@@ -27,31 +27,18 @@ if ($path === "clients" && $method === "GET") {
   $page    = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
   $perPage = isset($_GET['per_page']) ? max(1, min(200, (int)$_GET['per_page'])) : 200;
 
-  $conds = [];
-  $params = [];
-
-  $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
-  if ($q !== '') {
-    $conds[] = "(MATCH(name) AGAINST(? IN BOOLEAN MODE) OR name LIKE ? OR phone LIKE ? OR national_id LIKE ? OR id = ?)";
-    $params[] = $q . "*";
-    $params[] = "%" . $q . "%";
-    $params[] = "%" . $q . "%";
-    $params[] = "%" . $q . "%";
-    $params[] = is_numeric($q) ? (int)$q : 0;
-  }
-
-  $where = count($conds) ? ("WHERE " . implode(" AND ", $conds)) : "";
-
-  $countSt = $pdo->prepare("SELECT COUNT(*) FROM clients $where");
-  $countSt->execute($params);
+  $countSt = $pdo->query("SELECT COUNT(*) FROM clients");
   $total   = (int)$countSt->fetchColumn();
 
   $offset  = ($page - 1) * $perPage;
 
-  $sql = "SELECT * FROM clients $where ORDER BY id DESC LIMIT $perPage OFFSET $offset";
-  $stmt = $pdo->prepare($sql);
-  $stmt->execute($params);
-  $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+  $sql = "
+    SELECT *
+    FROM clients
+    ORDER BY id DESC
+    LIMIT $perPage OFFSET $offset
+  ";
+  $rows = $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC);
 
   if (!empty($rows)) {
     $clientIds = array_column($rows, 'id');
