@@ -9,7 +9,38 @@ $path   = trim($_GET["path"] ?? "", "/");
 $method = $_SERVER["REQUEST_METHOD"];
 $pdo    = db();
 
-require_permission($pdo, $auth, 'reports');
+// Resolve permissions dynamically, querying the database exactly once for non-admins
+$isAdmin = strtolower(trim((string)($auth['role'] ?? ''))) === 'admin';
+$hasDashboard = $isAdmin;
+$hasReports = $isAdmin;
+
+if (!$isAdmin) {
+  $userId = (int)($auth['sub'] ?? $auth['uid'] ?? 0);
+  if ($userId > 0) {
+    $st = $pdo->prepare("SELECT permissions_json FROM users WHERE id = ? LIMIT 1");
+    $st->execute([$userId]);
+    $permissionsJson = $st->fetchColumn();
+    if ($permissionsJson) {
+      $perms = json_decode($permissionsJson, true);
+      if (is_array($perms)) {
+        $screen = $perms['screen_permissions'] ?? $perms;
+        $hasDashboard = !empty($screen['dashboard']);
+        $hasReports = !empty($screen['reports']);
+      }
+    }
+  }
+}
+
+if ($path === 'reports/dashboard') {
+  if (!$hasDashboard && !$hasReports) {
+    respond(["error" => "ممنوع: ليس لديك صلاحية الوصول إلى هذه العملية (dashboard)"], 403);
+  }
+} else {
+  if (!$hasReports) {
+    respond(["error" => "ممنوع: ليس لديك صلاحية الوصول إلى هذه العملية (reports)"], 403);
+  }
+}
+
 ensure_financials_schema($pdo);
 ensure_depreciation_schema($pdo);
 // process_monthly_depreciation($pdo); // (Disabled on web requests, handled via CLI Cron)

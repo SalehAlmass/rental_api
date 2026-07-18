@@ -198,11 +198,29 @@ if ($path === "rents" && $method === "GET") {
 
   $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
   if ($q !== '') {
-    $conds[] = '(c.name LIKE ? OR e.name LIKE ? OR r.notes LIKE ? OR r.id = ?)';
-    $params[] = '%' . $q . '%';
-    $params[] = '%' . $q . '%';
-    $params[] = '%' . $q . '%';
+    $conds[] = '(
+      c.name LIKE ? 
+      OR c.phone LIKE ? 
+      OR e.name LIKE ? 
+      OR e.serial_no LIKE ? 
+      OR r.notes LIKE ? 
+      OR r.id = ? 
+      OR EXISTS (
+        SELECT 1 FROM rent_items ri 
+        JOIN equipment eq ON ri.equipment_id = eq.id 
+        WHERE ri.rent_id = r.id 
+          AND (eq.name LIKE ? OR eq.serial_no LIKE ?)
+      )
+    )';
+    $likeQ = '%' . $q . '%';
+    $params[] = $likeQ;
+    $params[] = $likeQ;
+    $params[] = $likeQ;
+    $params[] = $likeQ;
+    $params[] = $likeQ;
     $params[] = (int)$q;
+    $params[] = $likeQ;
+    $params[] = $likeQ;
   }
 
   // Archive filter: by default hide archived, unless explicitly requested
