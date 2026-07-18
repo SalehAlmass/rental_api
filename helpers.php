@@ -561,20 +561,25 @@ function has_permission(PDO $pdo, array $auth, string $permissionKey): bool
   $userId = (int)($auth['sub'] ?? $auth['uid'] ?? 0);
   if ($userId <= 0) return false;
 
-  $st = $pdo->prepare("SELECT permissions_json FROM users WHERE id = ? LIMIT 1");
+  // Fetch both role and permissions_json so we can normalize properly
+  $st = $pdo->prepare("SELECT role, permissions_json FROM users WHERE id = ? LIMIT 1");
   $st->execute([$userId]);
-  $permissionsJson = $st->fetchColumn();
-  if (!$permissionsJson) return false;
+  $user = $st->fetch(PDO::FETCH_ASSOC);
+  if (!$user) return false;
 
-  $perms = json_decode($permissionsJson, true);
-  if (!is_array($perms)) return false;
+  $dbRole = strtolower(trim((string)($user['role'] ?? 'employee')));
+
+  // Admin role in DB always allowed (JWT role might be stale)
+  if ($dbRole === 'admin') return true;
+
+  // Normalize permissions — fills in role defaults when permissions_json is NULL/empty/incomplete
+  $perms = normalize_user_permissions($user['permissions_json'] ?? null, $dbRole);
 
   if (isset($perms['screen_permissions']) && is_array($perms['screen_permissions'])) {
     return !empty($perms['screen_permissions'][$permissionKey]);
   }
 
-  // Legacy fallback: check root keys
-  return !empty($perms[$permissionKey]);
+  return false;
 }
 
 function require_permission(PDO $pdo, array $auth, string $permissionKey): void
