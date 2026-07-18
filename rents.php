@@ -365,8 +365,9 @@ if (preg_match('#^rents/(\d+)/financials$#', $path, $m) && $method === "GET") {
   attach_rent_items($pdo, $rows);
   $rent = $rows[0];
 
-  // 2) total
-  $total = to_float($rent["total_amount"] ?? 0);
+  // 2) total — compute dynamically for open contracts (same as list endpoint).
+  // get_rent_dynamic_total() returns stored total_amount when not open.
+  $total = get_rent_dynamic_total($rent);
 
   // 3) paid (in only, not void)
   $st2 = $pdo->prepare("
