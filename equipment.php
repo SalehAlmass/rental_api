@@ -157,6 +157,25 @@ if ($path === "equipment" && $method === "POST") {
   ], 201);
 }
 
+/**
+ * GET /equipment/{id}
+ */
+if (preg_match('#^equipment/(\d+)$#', $path, $m) && $method === "GET") {
+  $id = (int)$m[1];
+  $st = $pdo->prepare("SELECT * FROM equipment WHERE id = ? AND COALESCE(is_active,1)=1 LIMIT 1");
+  $st->execute([$id]);
+  $row = $st->fetch(PDO::FETCH_ASSOC);
+  if (!$row) respond(["error" => "المعدة غير موجودة"], 404);
+  
+  $vals = depreciation_compute_values($row);
+  $row['depreciation_monthly'] = $vals['depreciation_monthly'];
+  $row['operational_depreciation_per_day'] = $vals['operational_depreciation_per_day'];
+  if (!isset($row['book_value']) || (float)$row['book_value'] <= 0) {
+    $row['book_value'] = $vals['book_value'];
+  }
+  respond(["success" => true, "data" => $row]);
+}
+
 if (preg_match('#^equipment/(\d+)$#', $path, $m) && $method === "PUT") {
   $id = (int)$m[1];
   $curSt = $pdo->prepare("SELECT * FROM equipment WHERE id=? AND COALESCE(is_active,1)=1 LIMIT 1");

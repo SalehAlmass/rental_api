@@ -86,57 +86,6 @@ function attach_rent_items(PDO $pdo, array &$rents) {
   }
 }
 
-function get_rent_dynamic_total(array $rent, ?int $overrideEndTs = null): float {
-  $status = strtolower((string)($rent['status'] ?? ''));
-  if ($status !== 'open' && $overrideEndTs === null) {
-    return to_float($rent['total_amount'] ?? 0);
-  }
-
-  $now = $overrideEndTs !== null ? $overrideEndTs : time();
-  $items = $rent['items'] ?? [];
-  $total = 0.0;
-
-  if (!empty($items)) {
-    foreach ($items as $it) {
-      if (strtolower((string)($it['status'] ?? '')) === 'replaced') continue;
-      $start_ts = strtotime((string)$it['start_datetime']);
-      
-      if (strtolower((string)($it['status'] ?? '')) === 'open') {
-        $end_ts = $now;
-      } else {
-        $end_ts = $it['end_datetime'] ? strtotime((string)$it['end_datetime']) : $now;
-      }
-      
-      if ($start_ts && $end_ts) {
-        $diff = $end_ts - $start_ts;
-        if ($diff < 0) {
-          $days = 1;
-        } else {
-          $hrs = $diff / 3600.0;
-          $days = (int)ceil($hrs / 24.0);
-          if ($days < 1) $days = 1;
-        }
-        $total += $days * to_float($it['rate']);
-      }
-    }
-  } else {
-    $start_ts = strtotime((string)$rent["start_datetime"]);
-    $end_ts = $now;
-    if ($start_ts) {
-      $diff = $end_ts - $start_ts;
-      if ($diff < 0) {
-        $days = 1;
-      } else {
-        $hrs = $diff / 3600.0;
-        $days = (int)ceil($hrs / 24.0);
-        if ($days < 1) $days = 1;
-      }
-      $total = $days * to_float($rent["rate"] ?? 0);
-    }
-  }
-  return round($total, 2);
-}
-
 /**
  * Routes:
  * GET    rents
@@ -258,15 +207,6 @@ if ($path === "rents" && $method === "GET") {
   $st->execute($params);
   $rows = $st->fetchAll(PDO::FETCH_ASSOC);
   attach_rent_items($pdo, $rows);
-
-  foreach ($rows as &$row) {
-    if (strtolower((string)($row['status'] ?? '')) === 'open') {
-      $row['total_amount'] = get_rent_dynamic_total($row);
-      $discount = to_float($row['discount_amount'] ?? 0);
-      $paid = to_float($row['paid_amount'] ?? 0);
-      $row['remaining_amount'] = max(0.0, $row['total_amount'] - $discount - $paid);
-    }
-  }
 
   $pagination = $perPage > 0 ? ["total" => $total, "page" => $page, "per_page" => $perPage] : null;
   respond(["success" => true, "data" => $rows, "pagination" => $pagination], 200);
