@@ -32,8 +32,7 @@ if ($path === "clients" && $method === "GET") {
 
   $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
   if ($q !== '') {
-    $conds[] = "(MATCH(name) AGAINST(? IN BOOLEAN MODE) OR name LIKE ? OR phone LIKE ? OR national_id LIKE ? OR id = ?)";
-    $params[] = $q . "*";
+    $conds[] = "(name LIKE ? OR phone LIKE ? OR national_id LIKE ? OR id = ?)";
     $params[] = "%" . $q . "%";
     $params[] = "%" . $q . "%";
     $params[] = "%" . $q . "%";
