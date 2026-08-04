@@ -201,6 +201,7 @@ if (preg_match('#^equipment/(\d+)$#', $path, $m) && $method === "PUT") {
 }
 
 if (preg_match('#^equipment/(\d+)$#', $path, $m) && $method === "DELETE") {
+  require_permission($pdo, $auth, 'equipment_delete');
   $id = (int)$m[1];
   $chk = $pdo->prepare("SELECT status FROM equipment WHERE id=?");
   $chk->execute([$id]);

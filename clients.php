@@ -248,6 +248,7 @@ if (preg_match('#^clients/(\d+)$#', $path, $m) && $method === "PUT") {
  * DELETE /clients/{id}
  */
 if (preg_match('#^clients/(\d+)$#', $path, $m) && $method === "DELETE") {
+  require_permission($pdo, $auth, 'clients_delete');
   $id = (int)$m[1];
 
   // لو العميل مرتبط بعقود/سندات، MySQL قد يرفض بسبب FK

@@ -119,7 +119,7 @@ if ($path === "reports/dashboard" && $method === "GET") {
   $openRents = (int)$st->fetchColumn();
 
   // revenue: sum incoming payments within range
-  $conds2 = ["p.type='in'", "p.is_void=0"]; // ignore void
+  $conds2 = ["p.type='in'", "(p.is_void=0 OR p.is_void IS NULL)"];
   $params2 = [];
   build_date_filter("p.created_at", $from, $to, $conds2, $params2);
   $where2 = "WHERE " . implode(" AND ", $conds2);
@@ -128,14 +128,56 @@ if ($path === "reports/dashboard" && $method === "GET") {
   $st2->execute($params2);
   $revenue = (float)$st2->fetchColumn();
 
+  // Calculate specific period revenues from payments table for dashboard cards
+  $tz = 'Asia/Riyadh';
+  $todayObj = new DateTime('now', new DateTimeZone($tz));
+  $todayStr = $todayObj->format('Y-m-d');
+  $yesterdayStr = (clone $todayObj)->modify('-1 day')->format('Y-m-d');
+  
+  $dayOfWeek = (int)$todayObj->format('w'); // 0 (Sun) to 6 (Sat)
+  $daysSinceSaturday = ($dayOfWeek + 1) % 7;
+  $thisWeekStartObj = (clone $todayObj)->modify("-{$daysSinceSaturday} days");
+  $thisWeekStartStr = $thisWeekStartObj->format('Y-m-d');
+  $lastWeekStartStr = (clone $thisWeekStartObj)->modify('-7 days')->format('Y-m-d');
+  $lastWeekEndStr = (clone $thisWeekStartObj)->modify('-1 day')->format('Y-m-d');
+
+  $stRev = $pdo->prepare("
+    SELECT
+      IFNULL(SUM(CASE WHEN DATE(created_at) = ? THEN amount ELSE 0 END), 0) AS today_revenue,
+      IFNULL(SUM(CASE WHEN DATE(created_at) = ? THEN amount ELSE 0 END), 0) AS yesterday_revenue,
+      IFNULL(SUM(CASE WHEN DATE(created_at) >= ? THEN amount ELSE 0 END), 0) AS this_week_revenue,
+      IFNULL(SUM(CASE WHEN DATE(created_at) BETWEEN ? AND ? THEN amount ELSE 0 END), 0) AS last_week_revenue
+    FROM payments
+    WHERE type = 'in' AND (is_void = 0 OR is_void IS NULL)
+      AND created_at >= ?
+  ");
+  $stRev->execute([
+    $todayStr,
+    $yesterdayStr,
+    $thisWeekStartStr,
+    $lastWeekStartStr,
+    $lastWeekEndStr,
+    $lastWeekStartStr . ' 00:00:00'
+  ]);
+  $revRow = $stRev->fetch(PDO::FETCH_ASSOC);
+
+  $todayRevenue = (float)($revRow['today_revenue'] ?? 0);
+  $yesterdayRevenue = (float)($revRow['yesterday_revenue'] ?? 0);
+  $thisWeekRevenue = (float)($revRow['this_week_revenue'] ?? 0);
+  $lastWeekRevenue = (float)($revRow['last_week_revenue'] ?? 0);
+
   respond([
     "success" => true,
     "filter" => ["from" => $from, "to" => $to],
     "data" => [
-      "clients"    => $clients,
-      "equipment"  => $equipment,
-      "open_rents" => $openRents,
-      "revenue"    => $revenue,
+      "clients"            => $clients,
+      "equipment"          => $equipment,
+      "open_rents"         => $openRents,
+      "revenue"            => $revenue,
+      "today_revenue"     => $todayRevenue,
+      "yesterday_revenue" => $yesterdayRevenue,
+      "this_week_revenue" => $thisWeekRevenue,
+      "last_week_revenue" => $lastWeekRevenue,
     ],
   ], 200);
 }
@@ -332,10 +374,9 @@ if ($path === "reports/top-clients" && $method === "GET") {
 }
 
 // ---------------------------------------------------------
-// E) Late clients (approximation for this schema)
+// E) Payment Overdue clients
 // GET reports/late-clients?from&to&limit=10
-// NOTE: schema doesn't have expected_return_at, so we count "late" as:
-//       open rents older than 24h from start_datetime.
+// Calculates clients with remaining unpaid balance (total_debt > 0)
 // ---------------------------------------------------------
 if ($path === "reports/late-clients" && $method === "GET") {
 
@@ -343,7 +384,7 @@ if ($path === "reports/late-clients" && $method === "GET") {
   $to   = $_GET['to'] ?? null;
   $limit = max(1, min(100, (int)($_GET['limit'] ?? 10)));
 
-  $conds = ["r.status='open'", "TIMESTAMPDIFF(HOUR, r.start_datetime, NOW()) > 24"]; // late open
+  $conds = ["(IFNULL(r.total_amount, 0) - IFNULL(r.paid_amount, 0)) > 0"];
   $params = [];
   build_date_filter("r.created_at", $from, $to, $conds, $params);
   $where = "WHERE " . implode(" AND ", $conds);
@@ -353,18 +394,28 @@ if ($path === "reports/late-clients" && $method === "GET") {
       c.id AS client_id,
       c.name,
       c.phone,
-      COUNT(r.id) AS late_contracts_count
+      COUNT(DISTINCT r.id) AS late_contracts_count,
+      SUM(GREATEST(0, IFNULL(r.total_amount, 0) - IFNULL(r.paid_amount, 0))) AS total_debt,
+      MAX(p.created_at) AS last_payment_date
     FROM clients c
-    JOIN rents r ON r.client_id=c.id
+    JOIN rents r ON r.client_id = c.id
+    LEFT JOIN payments p ON p.client_id = c.id AND p.type = 'in' AND p.is_void = 0
     $where
     GROUP BY c.id, c.name, c.phone
-    ORDER BY late_contracts_count DESC
+    HAVING total_debt > 0
+    ORDER BY total_debt DESC, late_contracts_count DESC
     LIMIT $limit
   ";
 
   $st = $pdo->prepare($sql);
   $st->execute($params);
-  ok_list(["from"=>$from, "to"=>$to, "limit"=>$limit], $st->fetchAll(PDO::FETCH_ASSOC));
+  $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+  foreach ($rows as &$row) {
+    $row['total_debt'] = (float)($row['total_debt'] ?? 0);
+    $row['late_contracts_count'] = (int)($row['late_contracts_count'] ?? 0);
+  }
+
+  ok_list(["from" => $from, "to" => $to, "limit" => $limit], $rows);
 }
 
 // ---------------------------------------------------------

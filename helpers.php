@@ -497,40 +497,52 @@ function normalize_user_permissions($raw, ?string $role = null): array
   $screenDefaults = [];
   if (strtolower((string)$role) === 'admin') {
     $screenDefaults = [
-      'dashboard' => true, 'rents' => true, 'clients' => true, 'equipment' => true,
+      'dashboard' => true, 'rents' => true, 'clients' => true, 'clients_edit' => true, 'clients_delete' => true,
+      'equipment' => true, 'equipment_edit' => true, 'equipment_delete' => true,
       'payments' => true, 'receipts' => true, 'reports' => true, 'hr' => true,
       'attendance' => true, 'shifts' => true, 'backup' => true, 'settings' => true,
       'user_management' => true, 'print' => true, 'export' => true, 'audit_logs' => true,
-      'financial_reports' => true, 'shifts_monitoring' => true,
+      'financial_reports' => true, 'shifts_monitoring' => true, 'team_monitoring' => true,
       'attendance_dashboard' => true, 'attendance_manage' => true,
+      'contract_closing_settings' => true, 'admin_monitoring' => true, 'notifications' => true,
+      'depreciation_logs' => true, 'system_health' => true,
     ];
   } elseif (strtolower((string)$role) === 'manager') {
     $screenDefaults = [
-      'dashboard' => true, 'rents' => true, 'clients' => true, 'equipment' => true,
+      'dashboard' => true, 'rents' => true, 'clients' => true, 'clients_edit' => true, 'clients_delete' => false,
+      'equipment' => true, 'equipment_edit' => true, 'equipment_delete' => false,
       'payments' => true, 'receipts' => true, 'reports' => true, 'hr' => true,
       'attendance' => true, 'shifts' => true, 'backup' => true, 'settings' => true,
       'user_management' => false, 'print' => true, 'export' => true, 'audit_logs' => false,
-      'financial_reports' => true, 'shifts_monitoring' => true,
+      'financial_reports' => true, 'shifts_monitoring' => true, 'team_monitoring' => true,
       'attendance_dashboard' => true, 'attendance_manage' => true,
+      'contract_closing_settings' => false, 'admin_monitoring' => false, 'notifications' => true,
+      'depreciation_logs' => true, 'system_health' => false,
     ];
   } else { // employee
     $screenDefaults = [
-      'dashboard' => true, 'rents' => true, 'clients' => true, 'equipment' => true,
+      'dashboard' => true, 'rents' => true, 'clients' => true, 'clients_edit' => true, 'clients_delete' => false,
+      'equipment' => true, 'equipment_edit' => true, 'equipment_delete' => false,
       'payments' => true, 'receipts' => true, 'reports' => false, 'hr' => false,
       'attendance' => true, 'shifts' => true, 'backup' => false, 'settings' => false,
       'user_management' => false, 'print' => true, 'export' => true, 'audit_logs' => false,
-      'financial_reports' => false, 'shifts_monitoring' => false,
+      'financial_reports' => false, 'shifts_monitoring' => false, 'team_monitoring' => false,
       'attendance_dashboard' => false, 'attendance_manage' => false,
+      'contract_closing_settings' => false, 'admin_monitoring' => false, 'notifications' => true,
+      'depreciation_logs' => false, 'system_health' => false,
     ];
   }
 
   $screenPermissions = [];
   $rawScreen = $raw['screen_permissions'] ?? null;
   if (is_array($rawScreen)) {
+    // 1. Copy all explicit raw permission keys sent from the UI
+    foreach ($rawScreen as $k => $val) {
+      $screenPermissions[$k] = filter_var($val, FILTER_VALIDATE_BOOLEAN);
+    }
+    // 2. Fill in role defaults for any missing standard keys
     foreach ($screenDefaults as $k => $defVal) {
-      if (array_key_exists($k, $rawScreen)) {
-        $screenPermissions[$k] = filter_var($rawScreen[$k], FILTER_VALIDATE_BOOLEAN);
-      } else {
+      if (!array_key_exists($k, $screenPermissions)) {
         $screenPermissions[$k] = $defVal;
       }
     }

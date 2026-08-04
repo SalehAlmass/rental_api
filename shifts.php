@@ -199,9 +199,9 @@ if ($path === "shifts/close" && $method === "POST") {
   $actual = $cashInDrawer;
   $diff = (float)($actual - $expected);
 
-  $note = trim((string)($in['note'] ?? $in['notes'] ?? ''));
-  // Keep breakdown in notes for legacy transparency
-  $breakdown = "[cash_total={$cashTotal}, transfer_total={$transferTotal}]";
+  $fmtCash = number_format($cashTotal, 0);
+  $fmtTransfer = number_format($transferTotal, 0);
+  $breakdown = "[إجمالي النقد = {$fmtCash} ، إجمالي التحويل = {$fmtTransfer}]";
   $finalNotes = $note === '' ? $breakdown : ($note . " " . $breakdown);
 
   $sql = "
