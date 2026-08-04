@@ -165,6 +165,7 @@ if ($path === "reports/dashboard" && $method === "GET") {
   $yesterdayRevenue = (float)($revRow['yesterday_revenue'] ?? 0);
   $thisWeekRevenue = (float)($revRow['this_week_revenue'] ?? 0);
   $lastWeekRevenue = (float)($revRow['last_week_revenue'] ?? 0);
+  $deferredAmount  = calculate_outstanding_amount($pdo);
 
   respond([
     "success" => true,
@@ -178,6 +179,7 @@ if ($path === "reports/dashboard" && $method === "GET") {
       "yesterday_revenue" => $yesterdayRevenue,
       "this_week_revenue" => $thisWeekRevenue,
       "last_week_revenue" => $lastWeekRevenue,
+      "deferred_amount"   => $deferredAmount,
     ],
   ], 200);
 }
